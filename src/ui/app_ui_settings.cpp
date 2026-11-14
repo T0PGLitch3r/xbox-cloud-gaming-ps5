@@ -4,6 +4,7 @@
 #include <cstdint>
 #include "ui/app_ui_internal.h"
 #include "ui/stream_menu.h"
+#include "util/log.h"
 #include "input/gyro.h"
 #include "input/controller_backend.h"
 
@@ -482,10 +483,49 @@ void AppUi::handleTester(const NavInput& in) {
     }
 }
 
-void AppUi::openColourPicker(int previousMode) {
+void AppUi::applyThemeLocked() {
+    // Caller holds mutex_.
+    kGreen = accentOf(settings_.themeAccent);
+    // The picture, read once (and again after reloadBackgroundPicture()).
+    if (!bgPictureTried_ && !bgPicturePath_.empty()) {
+        bgPictureTried_ = true;
+        std::string bytes;
+        Image img;
+        if (platform::readFile(bgPicturePath_, bytes) && decodeImage(bytes, img) && img.w > 0 && img.h > 0) {
+            bgPicture_ = std::make_shared<const Image>(coverResize(img, kW, kH));
+        } else if (!bytes.empty()) {
+            XC_LOGW("background picture %s: not a JPEG or PNG it can read", bgPicturePath_.c_str());
+        }
+    }
+    // A background that isn't there any more (the picture gone): the default.
+    if (settings_.themeBackground == "picture" && !bgPicture_) settings_.themeBackground = "default";
+    dirty_ = true;
+}
+
+std::vector<std::string> AppUi::backgroundChoices() const {
+    std::vector<std::string> ids;
+    for (const auto& b : kBackgroundPresets) ids.push_back(b.id);
+    ids.push_back("accent");
+    if (bgPicture_) ids.push_back("picture");
+    if (caps_.desktopWindow) ids.push_back("choose");  // a file dialog to pick from
+    return ids;
+}
+
+Str AppUi::backgroundName(const std::string& id) {
+    for (const auto& b : kBackgroundPresets)
+        if (id == b.id) return b.name;
+    if (id == "accent") return Str::BgAccent;
+    if (id == "picture") return Str::BgPicture;
+    if (id == "choose") return Str::BgChoosePicture;
+    return Str::BgDefault;
+}
+
+void AppUi::openColourPicker(int previousMode, bool forAccent) {
     // Caller holds mutex_. Starts on the colour saved.
+    pickerForAccent_ = forAccent;
     float h, s, v;
-    colourHsv(settings_.lightBarColour, h, s, v);
+    colourHsv(forAccent ? (settings_.themeAccent ? settings_.themeAccent : kAccentPresets[0].colour) : settings_.lightBarColour,
+              h, s, v);
     pickU_ = s * std::cos(h * 6.2832f);
     pickV_ = s * std::sin(h * 6.2832f);
     pickValue_ = std::max(kMinValue, v);
@@ -519,12 +559,17 @@ void AppUi::handleColourPicker(const NavInput& in) {
     if (in.l2) pickValue_ = std::max(kMinValue, pickValue_ - 0.1f), dirty_ = true;
     if (in.r2) pickValue_ = std::min(1.0f, pickValue_ + 0.1f), dirty_ = true;
     if (in.accept) {
-        settings_.lightBarColour = pickerColour();
-        settings_.lightBarMode = 1;
+        if (pickerForAccent_) {
+            settings_.themeAccent = pickerColour() | 0xFF000000u;
+            applyThemeLocked();
+        } else {
+            settings_.lightBarColour = pickerColour();
+            settings_.lightBarMode = 1;
+        }
         pickerOpen_ = false;
         dirty_ = true;
     } else if (in.back) {
-        settings_.lightBarMode = pickerPrevMode_;
+        if (!pickerForAccent_) settings_.lightBarMode = pickerPrevMode_;
         pickerOpen_ = false;
         dirty_ = true;
     }
@@ -687,6 +732,13 @@ std::vector<std::string> AppUi::settingOptions(int row) const {
         out = {tr(Str::Deactivated), tr(Str::Activated)};
     } else if (row == 25) {
         out = {tr(Str::RemoveTrophiesConfirm)};
+    } else if (row == 28) {
+        for (const auto& a : kAccentPresets) out.push_back(tr(a.name));
+        out.push_back(tr(Str::ColourCustom));
+    } else if (row == 29) {
+        for (const auto& id : backgroundChoices()) out.push_back(tr(backgroundName(id)));
+    } else if (row == 30) {
+        out = {tr(Str::Deactivated), tr(Str::Activated)};
     } else if (row == 8 || row == 27) {
         out.push_back(row == 27 ? tr(Str::StoreCountryAuto) : loginCountryOffText());
         for (const char* country : kLoginCountries) out.push_back(loginCountryName(country));
@@ -745,6 +797,18 @@ int AppUi::settingSelected(int row) const {
             if (kVolumes[i] == settings_.gameVolume) return static_cast<int>(i);
         return 3;  // 100 %
     }
+    if (row == 28) {
+        for (size_t i = 0; i < std::size(kAccentPresets); ++i)
+            if (kAccentPresets[i].colour == settings_.themeAccent) return static_cast<int>(i);
+        return static_cast<int>(std::size(kAccentPresets));  // Custom
+    }
+    if (row == 29) {
+        auto ids = backgroundChoices();
+        for (size_t i = 0; i < ids.size(); ++i)
+            if (ids[i] == settings_.themeBackground) return static_cast<int>(i);
+        return 0;
+    }
+    if (row == 30) return settings_.themeGameArt ? 1 : 0;
     if (row == 8 || row == 27) {
         const auto& country = row == 27 ? settings_.storeCountry : settings_.loginCountry;
         for (size_t i = 0; i < std::size(kLoginCountries); ++i)
@@ -779,6 +843,22 @@ void AppUi::applySetting(int row, int index) {
         circleConfirms_ = settings_.circleConfirms;  // in force at once: the next press already uses it
     } else if (row == 6) {
         settings_.lightBarMode = index;
+    } else if (row == 28) {
+        // The presets; Custom (the last) opens the colour picker instead.
+        if (index >= 0 && index < static_cast<int>(std::size(kAccentPresets)))
+            settings_.themeAccent = kAccentPresets[static_cast<size_t>(index)].colour;
+        applyThemeLocked();
+    } else if (row == 29) {
+        auto ids = backgroundChoices();
+        if (index >= 0 && index < static_cast<int>(ids.size())) {
+            if (ids[static_cast<size_t>(index)] == "choose")
+                pictureWanted_ = true;  // handle() asks the app for a file
+            else
+                settings_.themeBackground = ids[static_cast<size_t>(index)];
+        }
+        applyThemeLocked();
+    } else if (row == 30) {
+        settings_.themeGameArt = index == 1;
     } else if (row == 7) {
     } else if (row == 9) {
         settings_.highRefresh = index == 1;
@@ -869,7 +949,10 @@ void AppUi::changeSetting(int delta) {
         if (next != cur) applySetting(10, next);
         return;
     }
-    applySetting(settingsRow_, (settingSelected(settingsRow_) + delta + n) % n);
+    int next = (settingSelected(settingsRow_) + delta + n) % n;
+    if (settingsRow_ == 28 && next == static_cast<int>(std::size(kAccentPresets))) next = (next + delta + n) % n;
+    if (settingsRow_ == 29 && backgroundChoices()[static_cast<size_t>(next)] == "choose") next = (next + delta + n) % n;
+    applySetting(settingsRow_, next);
 }
 
 bool AppUi::selectGameSettingsRow(int rowId) {
@@ -1226,7 +1309,8 @@ void AppUi::drawSettings(Canvas& c) {
                                         tr(Str::CheckSignIn),   tr(Str::NetworkTest),   tr(Str::SupportProject),
                                         tr(Str::VideoDecoder),  tr(Str::AudioHaptics),  tr(Str::PreviewFeatures),
                                         tr(Str::ResetSettings), tr(Str::SyncTrophies),  tr(Str::RemoveTrophies),
-                                        tr(Str::FpsLimit), tr(Str::StoreCountry)};
+                                        tr(Str::FpsLimit), tr(Str::StoreCountry),
+                                        tr(Str::AccentColour),  tr(Str::Background),    tr(Str::GameArtBehind)};
     constexpr int kRowW = 1140, kRowH = 30, kGap = 1, kGroupGap = 4, kRowPx = 22;
     Rect rows[kSettingRows];  // by row id
     int y = 184;
@@ -1326,6 +1410,10 @@ void AppUi::drawSettings(Canvas& c) {
                     c.fillCircle(vx - w - 26.0f, cy, 11, settings_.lightBarColour);
                     c.strokeArc(vx - w - 26.0f, cy, 11, 2, 0, 6.2832f, rgba(255, 255, 255, 120));
                 }
+                if (i == 28) {  // the accent in force
+                    c.fillCircle(vx - w - 26.0f, cy, 11, kGreen);
+                    c.strokeArc(vx - w - 26.0f, cy, 11, 2, 0, 6.2832f, rgba(255, 255, 255, 120));
+                }
             }
         }
         y += kRowH + kGap;
@@ -1359,6 +1447,9 @@ void AppUi::drawSettings(Canvas& c) {
         Str::SettingDescRemoveTrophies,
         Str::SettingDescFpsLimit,
         Str::SettingDescStoreCountry,
+        Str::SettingDescAccent,
+        Str::SettingDescBackground,
+        Str::SettingDescGameArt,
     };
     if (settingsRow_ >= 0 && settingsRow_ < kSettingRows) {
         const char* desc = tr(kSettingDescs[settingsRow_]);
@@ -1478,6 +1569,13 @@ void AppUi::drawSettings(Canvas& c) {
                                      fonts_.semibold.centeredY(item.y, item.h, 26), 26, text);
             if (settingsRow_ == 6 && i == 1)
                 c.fillCircle(item.x + item.w - 84.0f, item.y + item.h / 2.0f, 12, settings_.lightBarColour);
+            if (settingsRow_ == 28)
+                c.fillCircle(item.x + item.w - 84.0f, item.y + item.h / 2.0f, 12,
+                             i < static_cast<int>(std::size(kAccentPresets)) ? accentOf(kAccentPresets[static_cast<size_t>(i)].colour)
+                             : settings_.themeAccent                         ? settings_.themeAccent
+                                                                             : kAccentPresets[0].colour);
+            if (settingsRow_ == 29 && i < static_cast<int>(backgroundChoices().size()))
+                drawBackgroundSwatch(c, {item.x + item.w - 140, item.y + 10, 64, item.h - 20}, backgroundChoices()[static_cast<size_t>(i)]);
             if (i == sel) {  // a check mark on the current choice
                 float cx = static_cast<float>(item.x + item.w - 36), cy = static_cast<float>(item.y + item.h / 2);
                 c.line(cx - 10, cy, cx - 3, cy + 7, 3, on ? kBg : kGreen);
@@ -2170,7 +2268,7 @@ void AppUi::drawColourPicker(Canvas& c) {
     c.fillRect({panel.x + 8, panel.y + 12, panel.w, panel.h}, rgba(0, 0, 0, 120), 26);  // shadow
     c.fillRect(panel, kPanel, 24);
     c.strokeRect(panel, rgba(255, 255, 255, 50), 2, 24);
-    fonts_.bold.draw(c, tr(Str::LightBarColour), panel.x + 56, panel.y + 44, 40, kWhite);
+    fonts_.bold.draw(c, tr(pickerForAccent_ ? Str::AccentColour : Str::LightBarColour), panel.x + 56, panel.y + 44, 40, kWhite);
 
     // The wheel: angle = hue, distance from the centre = saturation, at the
     // brightness chosen (its pixels kept until that changes).

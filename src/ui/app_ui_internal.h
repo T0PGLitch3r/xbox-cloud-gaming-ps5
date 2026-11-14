@@ -53,7 +53,46 @@ constexpr Color kBg = rgba(14, 14, 14);
 constexpr Color kWhite = rgba(255, 255, 255);
 constexpr Color kGray = rgba(190, 190, 190);
 constexpr Color kDim = rgba(140, 140, 140);
-constexpr Color kGreen = rgba(16, 124, 16);
+// The accent (Settings > Accent colour): buttons, focus and progress. Set by
+// AppUi::applyThemeLocked() on the UI thread, which is the one drawing.
+inline Color kGreen = rgba(16, 124, 16);
+
+// Settings > Accent colour's presets; 0 is "the default" (kept as 0 in the
+// settings so a future default follows), then Custom… (the colour picker).
+struct AccentPreset {
+    Str name;
+    Color colour;  // 0: the Xbox green
+};
+constexpr Color kXboxGreen = rgba(16, 124, 16);
+constexpr AccentPreset kAccentPresets[] = {
+    {Str::ColourGreen, 0},
+    {Str::ColourBlue, rgba(0, 120, 212)},
+    {Str::ColourPurple, rgba(136, 64, 196)},
+    {Str::ColourPink, rgba(214, 36, 140)},
+    {Str::ColourRed, rgba(200, 40, 48)},
+    {Str::ColourOrange, rgba(222, 96, 14)},
+    {Str::ColourGold, rgba(184, 134, 11)},
+    {Str::ColourTeal, rgba(0, 140, 140)},
+};
+inline Color accentOf(Color saved) { return saved ? (saved | 0xFF000000u) : kXboxGreen; }
+
+// Settings > Background's presets: a vertical gradient, top to bottom, with
+// a soft glow of `glow` in the upper right. "accent" is made from the accent;
+// "picture" is the user's own (background.img).
+struct BackgroundPreset {
+    const char* id;
+    Str name;
+    Color top, bottom, glow;
+};
+constexpr BackgroundPreset kBackgroundPresets[] = {
+    {"default", Str::BgDefault, rgba(24, 28, 24), rgba(14, 14, 14), 0},
+    {"midnight", Str::BgMidnight, rgba(16, 26, 58), rgba(6, 8, 20), rgba(40, 80, 180, 70)},
+    {"violet", Str::BgViolet, rgba(44, 18, 66), rgba(10, 6, 18), rgba(150, 60, 220, 70)},
+    {"crimson", Str::BgCrimson, rgba(62, 12, 20), rgba(14, 6, 8), rgba(210, 40, 60, 60)},
+    {"forest", Str::BgForest, rgba(14, 44, 24), rgba(6, 14, 8), rgba(40, 160, 80, 60)},
+    {"ocean", Str::BgOcean, rgba(6, 46, 58), rgba(4, 12, 18), rgba(20, 170, 190, 60)},
+    {"sunset", Str::BgSunset, rgba(78, 30, 18), rgba(20, 8, 24), rgba(240, 120, 40, 70)},
+};
 constexpr Color kPanel = rgba(36, 36, 36);
 constexpr Color kPlaceholder = rgba(44, 44, 44);
 
@@ -67,9 +106,11 @@ constexpr int kResolutionOrder[3] = {1, 0, 2};
 // stream (resolution, a desktop's display mode, 120 Hz, bitrate, region, network test);
 // the controller, keyboard and queue-ready alert; support and updates last. A group starts at each
 // kSettingsGroupStart.
-constexpr int kSettingsCount = 27;
-constexpr int kSettingsOrder[kSettingsCount] = {0, 2, 8, 27, 17, 18, 24, 25, 1, 20, 13, 9, 26, 10, 14, 12, 3, 15, 4, 21, 5, 6, 16, 22, 19, 7, 23};
+constexpr int kSettingsCount = 30;
+// The look (28 accent colour, 29 background, 30 game art) as a group of its own.
+constexpr int kSettingsOrder[kSettingsCount] = {0, 2, 8, 27, 17, 18, 24, 25, 1, 20, 13, 9, 26, 10, 28, 29, 30, 14, 12, 3, 15, 4, 21, 5, 6, 16, 22, 19, 7, 23};
 constexpr bool kSettingsGroupStart[kSettingsCount] = {false, false, false, false, false, false, false, false, true, false, false, false, false, false,
+                                                      true, false, false,
                                                       true, false, false, false, false, false, false, false, false, false, true, false, true};
 // The game settings' rows on screen (ids: 0 profile, 1 upscaler, 2
 // sharpness, 3 block smoothing, 4 resolution, 5 dead zone, 6 triggers, 7

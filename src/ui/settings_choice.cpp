@@ -26,6 +26,9 @@ SettingsChoice choiceFromSettings(const app::Settings& s) {
     c.circleConfirms = s.circleConfirms;
     c.lightBarMode = s.lightBarMode;
     c.lightBarColour = s.lightBarColour;
+    c.themeAccent = s.themeAccent;
+    c.themeBackground = s.themeBackground;
+    c.themeGameArt = s.themeGameArt;
     c.sharpness = s.sharpness;
     c.deband = s.deband;
     c.upscaler = s.upscaler;
@@ -71,6 +74,9 @@ void applyChoice(const SettingsChoice& c, app::Settings& s) {
     s.circleConfirms = c.circleConfirms;
     s.lightBarMode = c.lightBarMode;
     s.lightBarColour = c.lightBarColour;
+    s.themeAccent = c.themeAccent;
+    s.themeBackground = c.themeBackground;
+    s.themeGameArt = c.themeGameArt;
     s.sharpness = c.sharpness;
     s.deband = c.deband;
     s.upscaler = c.upscaler;

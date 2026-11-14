@@ -48,6 +48,16 @@ Video is decoded by the GPU (Direct3D 11) when it can, else by the CPU;
 Settings > Video decoder chooses. The sharpening / upscaling filters need a
 GPU driver with Vulkan 1.3; without it the picture is drawn plainly.
 
+Colours and backgrounds
+-----------------------
+Settings > Accent colour: the colour of buttons, highlights and progress bars
+(eight presets, or Custom... for any colour on the wheel).
+Settings > Background: a colour theme, "Accent glow" (made from your accent),
+or "Choose a picture..." for a JPEG or PNG of your own. The picture is copied
+into %LOCALAPPDATA%\psbox\background.img, so the original can be moved.
+Settings > Game art on the home screen: Off keeps your background there
+instead of the focused game's artwork.
+
 Updates
 -------
 The app looks for a new version each time it starts and, when there is one,

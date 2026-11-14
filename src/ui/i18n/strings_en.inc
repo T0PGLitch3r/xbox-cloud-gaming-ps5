@@ -572,4 +572,30 @@ constexpr Column kEnglish = {
     "Store country", // StoreCountry
     "Automatic (sign-in country)", // StoreCountryAuto
     "Chooses the country used for store prices and free offers. The streaming server stays unchanged.", // SettingDescStoreCountry
+    "Accent colour", // AccentColour
+    "Background", // Background
+    "Game art on the home screen", // GameArtBehind
+    "The colour of buttons, highlights and progress bars in the menus.", // SettingDescAccent
+    "What fills the screen behind the menus: a colour, or a picture of your own.", // SettingDescBackground
+    "Shows the focused game's artwork behind the home screen. Off: your background stays.", // SettingDescGameArt
+    "Xbox green", // ColourGreen
+    "Blue", // ColourBlue
+    "Purple", // ColourPurple
+    "Pink", // ColourPink
+    "Red", // ColourRed
+    "Orange", // ColourOrange
+    "Gold", // ColourGold
+    "Teal", // ColourTeal
+    "Custom\xE2\x80\xA6", // ColourCustom
+    "Default", // BgDefault
+    "Midnight blue", // BgMidnight
+    "Violet", // BgViolet
+    "Crimson", // BgCrimson
+    "Forest", // BgForest
+    "Ocean", // BgOcean
+    "Sunset", // BgSunset
+    "Accent glow", // BgAccent
+    "Your picture", // BgPicture
+    "Choose a picture\xE2\x80\xA6", // BgChoosePicture
+    "That picture could not be opened (JPEG or PNG only)", // BgPictureFailed
 };

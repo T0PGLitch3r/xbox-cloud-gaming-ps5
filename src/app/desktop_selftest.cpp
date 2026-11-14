@@ -181,7 +181,7 @@ int desktopSelftest(const std::string& dir) {
     ui.setSettings(ui::SettingsChoice{});
     ui.setUpdateState(XC_APP_VERSION, {}, false);
     const display::DisplayCaps dc = display::caps();
-    check(!caps.console && caps.openUrl && !caps.selfUpdate && !caps.highRefresh &&
+    check(!caps.console && caps.openUrl && caps.selfUpdate == shell::canSelfUpdate() && !caps.highRefresh &&
               caps.upscalers == dc.upscalers && caps.sharpen == dc.sharpen && caps.deband == dc.deband,
           "desktop capabilities");
     ui::Canvas canvas(static_cast<int>(display::kWidth), static_cast<int>(display::kHeight));
@@ -236,6 +236,82 @@ int desktopSelftest(const std::string& dir) {
               "home screen with Xbox glyphs (2c-home-xbox.png)");
         ui::g_glyphStyle = ui::GlyphStyle::PlayStation;
         ui.invalidate();
+    }
+    // The look (Settings > Accent colour, Background, Game art): a preset
+    // with an accent of its own, the accent glow, then a picture of the
+    // user's with the game art off. 6*.png; the default look again after.
+    {
+        auto render = [&](const char* name, const char* what) {
+            ui.invalidate();
+            ui.render(canvas, platform::nowMs());
+            drawCanvas(canvas);
+            check(screenshot(dir, name, shot) && varied(shot), what);
+        };
+        ui::SettingsChoice themed;
+        themed.themeAccent = ui::rgba(0, 120, 212);
+        themed.themeBackground = "midnight";
+        ui.setSettings(themed);
+        ui.showHome();
+        render("6a-theme-home-midnight.png", "home screen, Midnight blue and a blue accent (6a-theme-home-midnight.png)");
+        ui::NavInput opts;
+        opts.options = true;
+        opts.nowMs = platform::nowMs();
+        ui.handle(opts);
+        render("6b-theme-settings.png", "Settings with the blue accent (6b-theme-settings.png)");
+        // Settings > Background's list, each choice with its swatch.
+        {
+            const int pos = ui::settingsRowPosition(caps, 29);
+            check(pos > 0, "Settings has the Background row");
+            for (int i = 0; i < pos; ++i) {
+                ui::NavInput down;
+                down.down = true;
+                down.nowMs = platform::nowMs();
+                ui.handle(down);
+            }
+            ui::NavInput open;
+            open.accept = true;
+            open.nowMs = platform::nowMs();
+            ui.handle(open);
+            render("6e-theme-background-list.png", "Settings > Background's choices (6e-theme-background-list.png)");
+            ui::NavInput close;
+            close.back = true;
+            close.nowMs = platform::nowMs();
+            ui.handle(close);
+        }
+        ui::NavInput back;
+        back.back = true;
+        back.nowMs = platform::nowMs();
+        ui.handle(back);
+        themed.themeAccent = ui::rgba(214, 36, 140);
+        themed.themeBackground = "accent";
+        ui.setSettings(themed);
+        render("6c-theme-accent-glow.png", "home screen, the pink accent's glow (6c-theme-accent-glow.png)");
+        // A picture: a test pattern written as a PNG, read as a user's would be.
+        const int pw = 960, ph = 540;
+        std::vector<uint8_t> pic(static_cast<size_t>(pw) * ph * 3);
+        for (int y = 0; y < ph; ++y)
+            for (int x = 0; x < pw; ++x) {
+                uint8_t* p = &pic[(static_cast<size_t>(y) * pw + x) * 3];
+                bool check = ((x / 60) + (y / 60)) % 2;
+                p[0] = static_cast<uint8_t>(40 + 200 * x / pw), p[1] = static_cast<uint8_t>(check ? 150 : 60),
+                p[2] = static_cast<uint8_t>(220 - 180 * y / ph);
+            }
+        const std::string picPath = dir + "/selftest-background.png";
+        bool wrote = stbi_write_png(picPath.c_str(), pw, ph, 3, pic.data(), pw * 3) != 0;
+        ui.setBackgroundPicturePath(picPath);
+        themed.themeBackground = "picture";
+        themed.themeGameArt = false;
+        themed.themeAccent = 0;
+        ui.setSettings(themed);
+        check(wrote && ui.settings().themeBackground == "picture", "a picture background is read (PNG)");
+        render("6d-theme-picture.png", "home screen over the user's picture (6d-theme-picture.png)");
+        // A file that isn't a picture: the default background, not a failure.
+        ui.setBackgroundPicturePath(dir + "/1-signin.png.missing");
+        ui.setSettings(themed);
+        check(ui.settings().themeBackground == "default", "a missing picture falls back to the default background");
+        ui.setBackgroundPicturePath({});
+        ui.setSettings(ui::SettingsChoice{});
+        ui.showHome();
     }
     // Settings > Controller buttons: the map as it is, a row cleared (Circle
     // then stays, naming it), a press captured, and a complete map kept on

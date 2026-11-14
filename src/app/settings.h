@@ -122,6 +122,13 @@ struct Settings {
     // lightBarColour, 2 off.
     int lightBarMode = 0;
     uint32_t lightBarColour = 0xFFDC7000;  // as ui::Color: 0xAABBGGRR, opaque (blue)
+    // The menus' look (Settings > Accent colour, Background, Game art): the
+    // accent (0: the Xbox green; else as ui::Color), the background
+    // ("default", a preset's id, "accent", or "picture": background.img in the
+    // data folder) and whether the focused game's art fills the home screen.
+    uint32_t themeAccent = 0;
+    std::string themeBackground = "default";
+    bool themeGameArt = true;
     int gestureHints = 0;
     // Voice chat & Audio routing
     bool micEnabled = true;

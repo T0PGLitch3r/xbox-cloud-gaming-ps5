@@ -65,6 +65,10 @@ void setFullscreen(bool on);
 bool fullscreenSwitched(bool& on);
 // Opens `url` in the system's browser; false where there is none (PS5).
 bool openUrl(const std::string& url);
+// A picture file chosen by the user (a desktop's file dialog, JPEG / PNG):
+// `done` later gets its path, or "" when the dialog was closed (from any
+// thread). False where there is no dialog (`done` is then never called).
+bool chooseImageFile(std::function<void(const std::string& path)> done);
 // The keyboard typing text into a field (the home search): on while the UI
 // wants it (main thread, each pass). True where typed text comes through
 // takeTextInput() (the desktop); false where there is none (PS5, null),

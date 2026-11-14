@@ -1369,7 +1369,27 @@ void AppUi::setSettings(const SettingsChoice& choice) {
     settings_ = choice;
     gyroMode_ = choice.gyroMode;
     gyroLevel_ = choice.gyroLevel;
+    applyThemeLocked();
     dirty_ = true;
+}
+
+void AppUi::setBackgroundPicturePath(const std::string& path) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    bgPicturePath_ = path;
+    bgPicture_.reset();
+    bgPictureTried_ = false;
+    applyThemeLocked();
+    dirty_ = true;
+}
+
+bool AppUi::reloadBackgroundPicture() {
+    std::lock_guard<std::mutex> lock(mutex_);
+    bgPicture_.reset();
+    bgPictureTried_ = false;
+    settings_.themeBackground = "picture";
+    applyThemeLocked();
+    dirty_ = true;
+    return bgPicture_ != nullptr;
 }
 
 void AppUi::setFullscreen(bool on) {

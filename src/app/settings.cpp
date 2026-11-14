@@ -112,6 +112,12 @@ bool Settings::load(const std::string& path) {
     // "lightBar" (on/off) until the colour could be chosen.
     lightBarMode = (*j)["lightBar"].asBool(true) ? 0 : 2;
     lightBarMode = static_cast<int>(std::clamp<int64_t>((*j)["lightBarMode"].asInt(lightBarMode), 0, 2));
+    if (std::string hex = (*j)["themeAccent"].str(); hex.size() == 7 && hex[0] == '#') {
+        uint32_t rgb = static_cast<uint32_t>(std::strtoul(hex.c_str() + 1, nullptr, 16));
+        themeAccent = 0xFF000000u | (rgb >> 16 & 0xFF) | (rgb & 0xFF00) | (rgb & 0xFF) << 16;
+    }
+    if (std::string bg = (*j)["themeBackground"].str(); !bg.empty() && bg.size() < 32) themeBackground = bg;
+    themeGameArt = (*j)["themeGameArt"].asBool(true);
     if (std::string hex = (*j)["lightBarColour"].str(); hex.size() == 7 && hex[0] == '#') {
         uint32_t rgb = static_cast<uint32_t>(std::strtoul(hex.c_str() + 1, nullptr, 16));
         lightBarColour = 0xFF000000u | (rgb >> 16 & 0xFF) | (rgb & 0xFF00) | (rgb & 0xFF) << 16;
@@ -374,6 +380,15 @@ bool Settings::save(const std::string& path) const {
     std::snprintf(hex, sizeof hex, "#%02X%02X%02X", static_cast<unsigned>(lightBarColour & 0xFF),
                   static_cast<unsigned>(lightBarColour >> 8 & 0xFF), static_cast<unsigned>(lightBarColour >> 16 & 0xFF));
     v.set("lightBarColour", std::string(hex));
+    if (themeAccent) {
+        std::snprintf(hex, sizeof hex, "#%02X%02X%02X", static_cast<unsigned>(themeAccent & 0xFF),
+                      static_cast<unsigned>(themeAccent >> 8 & 0xFF), static_cast<unsigned>(themeAccent >> 16 & 0xFF));
+        v.set("themeAccent", std::string(hex));
+    } else {
+        v.set("themeAccent", std::string());
+    }
+    v.set("themeBackground", themeBackground);
+    v.set("themeGameArt", themeGameArt);
     v.set("gestureHints", gestureHints);
     v.set("micEnabled", micEnabled);
     v.set("highRefresh", highRefresh);

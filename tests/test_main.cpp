@@ -4347,21 +4347,22 @@ static void testVisibleSettingsRows() {
     };
     const ui::UiCaps ps5;
     auto all = ui::visibleSettingsRows(ps5);
-    CHECK((ids(all) == std::vector<int>{0, 2, 8, 27, 17, 18, 24, 25, 1, 20, 9, 26, 10, 14, 12, 3, 15, 4, 21, 5, 6, 16, 22, 19, 7, 23}));
-    CHECK((groups(all) == std::vector<bool>{false, false, false, false, false, false, false, false, true, false, false, false, false, true, false, false, false, false, false, false, false, false, false, true, false, true}));
+    // The look (28 accent, 29 background, 30 game art) a group of its own, after the stream's.
+    CHECK((ids(all) == std::vector<int>{0, 2, 8, 27, 17, 18, 24, 25, 1, 20, 9, 26, 10, 28, 29, 30, 14, 12, 3, 15, 4, 21, 5, 6, 16, 22, 19, 7, 23}));
+    CHECK((groups(all) == std::vector<bool>{false, false, false, false, false, false, false, false, true, false, false, false, false, true, false, false, true, false, false, false, false, false, false, false, false, false, true, false, true}));
     ui::UiCaps pc;
     pc.lightBar = pc.triggerRumble = pc.adaptiveTriggers = pc.gyro = pc.touchpad = false;
     pc.upscalers = pc.sharpen = pc.deband = pc.highRefresh = pc.console = pc.selfUpdate = false;
     pc.openUrl = true;
     auto desk = ui::visibleSettingsRows(pc);
-    CHECK((ids(desk) == std::vector<int>{0, 2, 8, 27, 17, 18, 24, 1, 20, 26, 10, 14, 12, 3, 5, 16, 22, 19, 7, 23}));
-    CHECK((groups(desk) == std::vector<bool>{false, false, false, false, false, false, false, true, false, false, false, true, false, false, false, false, false, true, false, true}));
+    CHECK((ids(desk) == std::vector<int>{0, 2, 8, 27, 17, 18, 24, 1, 20, 26, 10, 28, 29, 30, 14, 12, 3, 5, 16, 22, 19, 7, 23}));
+    CHECK((groups(desk) == std::vector<bool>{false, false, false, false, false, false, false, true, false, false, false, true, false, false, true, false, false, false, false, false, true, false, true}));
     // The desktop app's window: Display mode after the resolution, in the stream's group.
     ui::UiCaps win = pc;
     win.desktopWindow = true;
     auto w = ui::visibleSettingsRows(win);
-    CHECK((ids(w) == std::vector<int>{0, 2, 8, 27, 17, 18, 24, 1, 20, 13, 26, 10, 14, 12, 3, 5, 16, 22, 19, 7, 23}));
-    CHECK((groups(w) == std::vector<bool>{false, false, false, false, false, false, false, true, false, false, false, false, true, false, false, false, false, false, true, false, true}));
+    CHECK((ids(w) == std::vector<int>{0, 2, 8, 27, 17, 18, 24, 1, 20, 13, 26, 10, 28, 29, 30, 14, 12, 3, 5, 16, 22, 19, 7, 23}));
+    CHECK((groups(w) == std::vector<bool>{false, false, false, false, false, false, false, true, false, false, false, false, true, false, false, true, false, false, false, false, false, true, false, true}));
     ui::UiCaps xbox = pc;  // an Xbox pad: impulse triggers, no light bar
     xbox.triggerRumble = true;
     auto x = ids(ui::visibleSettingsRows(xbox));
@@ -4409,14 +4410,15 @@ static void testVisibleSettingsRows() {
     // How far down the autoplay tests walk to each row (autoplay.cpp's downsTo).
     CHECK(ui::settingsRowPosition(ps5, 24) == 6);
     CHECK(ui::settingsRowPosition(ps5, 25) == 7);
-    CHECK(ui::settingsRowPosition(ps5, 27) == 3 && ui::settingsRowPosition(ps5, 1) == 8 && ui::settingsRowPosition(ps5, 3) == 15);
-    CHECK(ui::settingsRowPosition(ps5, 16) == 21);
-    CHECK(ui::settingsRowPosition(ps5, 5) == 19 && ui::settingsRowPosition(ps5, 6) == 20);
-    CHECK(ui::settingsRowPosition(ps5, 12) == 14 && ui::settingsRowPosition(ps5, 14) == 13);
-    CHECK(ui::settingsRowPosition(ps5, 22) == 22);
-    CHECK(ui::settingsRowPosition(ps5, 7) == 24 && ui::settingsRowPosition(ps5, 19) == 23 && ui::settingsRowPosition(ps5, 2) == 1);
-    CHECK(ui::settingsRowPosition(ps5, 21) == 18);
-    CHECK(ui::settingsRowPosition(pc, 5) == 14 && ui::settingsRowPosition(pc, 6) == -1 && ui::settingsRowPosition(pc, 4) == -1);
+    CHECK(ui::settingsRowPosition(ps5, 27) == 3 && ui::settingsRowPosition(ps5, 1) == 8 && ui::settingsRowPosition(ps5, 3) == 18);
+    CHECK(ui::settingsRowPosition(ps5, 16) == 24);
+    CHECK(ui::settingsRowPosition(ps5, 5) == 22 && ui::settingsRowPosition(ps5, 6) == 23);
+    CHECK(ui::settingsRowPosition(ps5, 12) == 17 && ui::settingsRowPosition(ps5, 14) == 16);
+    CHECK(ui::settingsRowPosition(ps5, 22) == 25);
+    CHECK(ui::settingsRowPosition(ps5, 7) == 27 && ui::settingsRowPosition(ps5, 19) == 26 && ui::settingsRowPosition(ps5, 2) == 1);
+    CHECK(ui::settingsRowPosition(ps5, 21) == 21);
+    CHECK(ui::settingsRowPosition(ps5, 28) == 13 && ui::settingsRowPosition(ps5, 29) == 14 && ui::settingsRowPosition(ps5, 30) == 15);
+    CHECK(ui::settingsRowPosition(pc, 5) == 17 && ui::settingsRowPosition(pc, 6) == -1 && ui::settingsRowPosition(pc, 4) == -1);
 }
 
 // The controller's glyphs by pad kind (ui/pad_glyphs.h).

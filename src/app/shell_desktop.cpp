@@ -28,6 +28,7 @@
 #endif
 
 #include <atomic>
+#include <memory>
 #include <csignal>
 #include <cstdio>
 #include <cstdlib>
@@ -232,6 +233,20 @@ bool fullscreenSwitched(bool& on) {
     if (g_switchedTo < 0) return false;
     on = g_switchedTo == 1;
     g_switchedTo = -1;
+    return true;
+}
+
+bool chooseImageFile(std::function<void(const std::string& path)> done) {
+    static const SDL_DialogFileFilter kFilters[] = {{"Pictures (JPEG, PNG)", "jpg;jpeg;png"}};
+    auto* cb = new std::function<void(const std::string&)>(std::move(done));
+    SDL_ShowOpenFileDialog(
+        [](void* user, const char* const* files, int) {
+            std::unique_ptr<std::function<void(const std::string&)>> fn(
+                static_cast<std::function<void(const std::string&)>*>(user));
+            if (!files) XC_LOGW("file dialog: %s", SDL_GetError());
+            (*fn)(files && files[0] ? std::string(files[0]) : std::string());
+        },
+        cb, display::sdlWindow(), kFilters, 1, nullptr, false);
     return true;
 }
 

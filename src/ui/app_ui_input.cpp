@@ -720,6 +720,8 @@ UiEvent AppUi::onMouseDown(float x, float y, int button) {
                         dirty_ = true;
                         if (settingsRow_ == 6 && i == 1) {
                             openColourPicker(before);
+                        } else if (settingsRow_ == 28 && i == static_cast<int>(std::size(kAccentPresets))) {
+                            openColourPicker(before, true);
                         } else if (settingsRow_ != 8) {
                             ev.action = settingsRow_ == 27 ? Action::StoreCountry : Action::SettingsChanged;
                             ev.settings = settings_;
@@ -1126,6 +1128,8 @@ UiEvent AppUi::handle(const NavInput& in) {
                 if (in.accept || in.back) dropdownOpen_ = false;
                 if (in.accept && settingsRow_ == 6 && dropdownIndex_ == 1) {
                     openColourPicker(before);
+                } else if (in.accept && settingsRow_ == 28 && dropdownIndex_ == static_cast<int>(std::size(kAccentPresets))) {
+                    openColourPicker(before, true);
                 } else if (in.accept && settingsRow_ != 8) {
                     ev.action = settingsRow_ == 27 ? Action::StoreCountry : Action::SettingsChanged;
                     ev.settings = settings_;
@@ -1391,6 +1395,12 @@ UiEvent AppUi::handle(const NavInput& in) {
         if (signOutHoldStart_) dirty_ = true;
         signOutHoldStart_ = 0;
         if (!in.touchpad) signOutLatched_ = false;
+    }
+    if (pictureWanted_) {
+        // "Choose a picture…": the app opens the file dialog (and comes back
+        // with setBackgroundPicture()).
+        pictureWanted_ = false;
+        if (ev.action == Action::None) ev.action = Action::ChooseBackground;
     }
     if (displayModeChanged_) {
         // A desktop's display mode applies (and is saved) as it is picked,

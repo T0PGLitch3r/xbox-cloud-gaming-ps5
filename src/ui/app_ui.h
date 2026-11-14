@@ -26,6 +26,8 @@
 
 namespace xc::ui {
 
+enum class Str;  // ui/strings.h
+
 struct FriendPlaying {
     std::string gamertag;
     std::string gamerpicUrl;
@@ -130,6 +132,9 @@ struct SettingsChoice {
     bool circleConfirms = false;  // Circle is Xbox A (and Cross is B)
     int lightBarMode = 0;         // 0 the game's colour, 1 lightBarColour, 2 off
     Color lightBarColour = rgba(0, 112, 220);
+    Color themeAccent = 0;                    // 0: the Xbox green
+    std::string themeBackground = "default";  // app::Settings::themeBackground
+    bool themeGameArt = true;
     int sharpness = 0;
     int deband = 3;
     int upscaler = 2;
@@ -206,7 +211,7 @@ std::vector<SettingsRowPos> visibleGameSettingsRows(const UiCaps& caps, bool cus
 
 // The largest stick dead zone Settings offers, in percent of the travel.
 constexpr int kMaxDeadzone = 30;
-constexpr int kSettingRows = 28;  // language, resolution, region, dead zone, triggers, confirm, light bar, updates,
+constexpr int kSettingRows = 31;  // + accent colour, background, game art behind the home screen  // language, resolution, region, dead zone, triggers, confirm, light bar, updates,
                                   // sign-in country, 120 Hz output, bitrate cap, game volume, keyboard keys,
                                   // display mode (a desktop's window), controller buttons, gyro aiming, queue chime,
                                   // check sign-in, network test, support project, video decoder, audio-to-haptics,
@@ -251,6 +256,7 @@ enum class Action {
     StoreCountry,  // store country changed: save and refresh the catalog
     LoginCountry,  // the sign-in country changed (settings): save them and sign in again
     OpenUrl,  // a link on screen to open in the browser (UiCaps::openUrl): `url`
+    ChooseBackground,  // Settings > Background > Choose a picture: the app asks for a file
     Quit,     // desktop: the user closed the app from the home screen
     ClaimFreeGame, // claim a free-to-play game license directly
     RefreshLibrary, // manual library refresh
@@ -410,6 +416,11 @@ public:
     // another country (Square), and Settings (Options).
     void showRegionRefused(const std::string& message);
     void setSettings(const SettingsChoice& choice);
+    // Settings > Background's picture: the file it is read from (the data
+    // folder's background.img), and after the app put a new one there, its
+    // reload (with "picture" chosen; false when it can't be decoded).
+    void setBackgroundPicturePath(const std::string& path);
+    bool reloadBackgroundPicture();
     // A desktop's window went fullscreen or back another way (F11 / Alt+Enter):
     // the Display mode row shows it.
     void setFullscreen(bool on);
@@ -617,7 +628,17 @@ private:
     void drawReport(Canvas& c);
     void drawCountryPicker(Canvas& c);
     // The light bar's colour picker (Settings > Light bar > Custom colour).
-    void openColourPicker(int previousMode);
+    void openColourPicker(int previousMode, bool forAccent = false);
+    // The theme in settings_ in force (the accent, the background's picture).
+    void applyThemeLocked();
+    // Settings > Background's choices (ids), in order: the presets, "accent",
+    // "picture" when there is one, "choose" where a file can be picked.
+    std::vector<std::string> backgroundChoices() const;
+    static Str backgroundName(const std::string& id);
+    void drawBackgroundSwatch(Canvas& c, Rect r, const std::string& id);
+    bool themedBackground() const;      // a background other than the default
+    void drawTopBand(Canvas& c, int h);  // behind the top bar, over scrolled rows
+    void paintBackground(Canvas& c, Rect r, const std::string& id);
     void handleColourPicker(const NavInput& in);
     Color pickerColour() const;
     void drawColourPicker(Canvas& c);
@@ -803,6 +824,11 @@ private:
     int testerStick_ = 0;          // the stick tester: the one being adjusted (L1 / R1)
     float testSticks_[4] = {0, 0, 0, 0}, testL2_ = 0, testR2_ = 0;
     bool pickerOpen_ = false;
+    bool pickerForAccent_ = false;  // the picker sets the accent, not the light bar
+    bool pictureWanted_ = false;    // handle(): Action::ChooseBackground
+    std::string bgPicturePath_;
+    std::shared_ptr<const Image> bgPicture_;  // kW x kH, or none
+    bool bgPictureTried_ = false;
     float pickU_ = 0, pickV_ = 0;  // on the wheel: angle = hue, distance = saturation
     float pickValue_ = 1;          // brightness
     int pickerPrevMode_ = 0;       // what Circle goes back to

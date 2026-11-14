@@ -95,6 +95,7 @@ void setFullscreen(bool) {}
 bool fullscreenSwitched(bool&) { return false; }
 // No browser to send a link to: the screens show a QR code instead.
 bool openUrl(const std::string&) { return false; }
+bool chooseImageFile(std::function<void(const std::string&)>) { return false; }
 bool setTextInput(bool) { return false; }  // the USB keyboard keeps moving through the screens
 std::string takeTextInput() { return {}; }
 void setMouseHandler(std::function<void(const MouseEvent&)>) {}

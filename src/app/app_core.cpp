@@ -367,6 +367,7 @@ bool coreStartup() {
         },
         imageBudget, platform::dataDir() + "/imgcache");
     g_ui = std::make_unique<ui::AppUi>(fonts, *g_images);
+    g_ui->setBackgroundPicturePath(platform::dataDir() + "/background.img");  // Settings > Background
     g_ui->showSplash(ui::tr(ui::Str::SigningIn));
     startPriceLoop();
     // The trophies are the console user's who opened the app: their own records, their own home.
@@ -1189,6 +1190,32 @@ void Core::dispatchUiAction(const ui::UiEvent& ev) {
             break;
         case ui::Action::Report: openReport(ev.reportWhat, false, ui::tr(ui::Str::ReportProblem)); break;
         case ui::Action::Quit: quitAsked_ = true; break;  // desktop only (the PS5 never asks)
+        case ui::Action::ChooseBackground: {
+            // Settings > Background > Choose a picture: copied into the data
+            // folder (the original may move), then in force.
+            bool asked = shell::chooseImageFile([](const std::string& path) {
+                if (path.empty()) return;  // the dialog was closed
+                std::string bytes;
+                ui::Image img;
+                if (!platform::readFile(path, bytes) || bytes.size() > (48u << 20) || !ui::decodeImage(bytes, img)) {
+                    XC_LOGW("background picture: %s can't be read as a JPEG or PNG", path.c_str());
+                    platform::notify(ui::tr(ui::Str::BgPictureFailed));
+                    return;
+                }
+                if (!platform::writeFileAtomic(platform::dataDir() + "/background.img", bytes)) {
+                    XC_LOGE("background picture: could not save it in %s", platform::dataDir().c_str());
+                    platform::notify(ui::tr(ui::Str::BgPictureFailed));
+                    return;
+                }
+                XC_LOGI("background picture: %dx%d, in force", img.w, img.h);
+                g_ui->reloadBackgroundPicture();
+                std::lock_guard<std::mutex> lock(g_settingsMutex);
+                g_settings.themeBackground = "picture";
+                g_settings.save(settingsPath());
+            });
+            if (!asked) XC_LOGW("background picture: no file dialog here");
+            break;
+        }
         case ui::Action::OpenUrl: {
             // A desktop: the sign-in page, the report form, the release page.
             bool ok = shell::openUrl(ev.url);

@@ -34,8 +34,124 @@ void AppUi::drawCentered(Canvas& c, const Font& f, const std::string& text, int 
     f.draw(c, text, (kW - f.measure(text, px)) / 2, y, px, color);
 }
 
+namespace {
+
+// A preset's or the accent's colours (top, bottom, glow).
+void backgroundColours(const std::string& id, Color& top, Color& bottom, Color& glow) {
+    top = kBackgroundPresets[0].top, bottom = kBackgroundPresets[0].bottom, glow = 0;
+    if (id == "accent") {
+        auto scale = [](Color col, float f) {
+            auto ch = [&](int shift) { return static_cast<uint8_t>(((col >> shift) & 0xFF) * f); };
+            return rgba(ch(0), ch(8), ch(16));
+        };
+        top = scale(kGreen, 0.38f), bottom = scale(kGreen, 0.07f), glow = withAlpha(kGreen, 80);
+        return;
+    }
+    for (const auto& b : kBackgroundPresets)
+        if (id == b.id) top = b.top, bottom = b.bottom, glow = b.glow;
+}
+
+// The whole screen's background, painted once into an image (the glow is a
+// per-pixel falloff, too slow to draw each frame).
+void paintFull(Image& out, const std::string& id, const Image* picture) {
+    Canvas c(kW, kH);
+    if (id == "picture" && picture) {
+        c.drawImage(*picture, 0, 0);
+        // Dimmed, darker on the left and at the bottom, where the text is.
+        c.fillRect({0, 0, kW, kH}, rgba(0, 0, 0, 96));
+        c.gradientH({0, 0, 1100, kH}, rgba(0, 0, 0, 150), rgba(0, 0, 0, 0));
+        c.gradientV({0, kH / 2, kW, kH / 2}, rgba(0, 0, 0, 0), rgba(0, 0, 0, 150));
+    } else {
+        Color top, bottom, glow;
+        backgroundColours(id, top, bottom, glow);
+        c.gradientV({0, 0, kW, kH}, top, bottom);
+        if (alphaOf(glow)) {
+            const float gx = kW * 0.82f, gy = kH * 0.12f, R = kW * 0.62f;
+            const uint32_t gr = glow & 0xFF, gg = (glow >> 8) & 0xFF, gb = (glow >> 16) & 0xFF, ga = alphaOf(glow);
+            uint32_t* px = c.data();
+            for (int y = 0; y < kH; ++y)
+                for (int x = 0; x < kW; ++x) {
+                    float d = std::hypot(x - gx, (y - gy) * 1.4f) / R;
+                    if (d >= 1) continue;
+                    uint32_t a = static_cast<uint32_t>(ga * (1 - d) * (1 - d));
+                    uint32_t& p = px[static_cast<size_t>(y) * kW + x];
+                    uint32_t r = p & 0xFF, g = (p >> 8) & 0xFF, b = (p >> 16) & 0xFF;
+                    r += (gr - r) * a / 255, g += (gg - g) * a / 255, b += (gb - b) * a / 255;
+                    p = rgba(static_cast<uint8_t>(r), static_cast<uint8_t>(g), static_cast<uint8_t>(b));
+                }
+        }
+    }
+    out.w = kW, out.h = kH, out.opaque = true;
+    out.px.assign(c.data(), c.data() + static_cast<size_t>(kW) * kH);
+}
+
+}  // namespace
+
 void AppUi::drawBackground(Canvas& c) {
-    c.gradientV({0, 0, kW, kH}, rgba(24, 28, 24), kBg);
+    const std::string& id = settings_.themeBackground;
+    if (id.empty() || id == "default") {
+        c.gradientV({0, 0, kW, kH}, rgba(24, 28, 24), kBg);
+        return;
+    }
+    paintBackground(c, {0, 0, kW, kH}, id);
+}
+
+void AppUi::paintBackground(Canvas& c, Rect r, const std::string& id) {
+    // Full screen: the cached image of the background in force.
+    static Image s_full;
+    static std::string s_key;
+    std::string key = id + "/" + std::to_string(kGreen) + "/" + std::to_string(reinterpret_cast<uintptr_t>(bgPicture_.get()));
+    if (key != s_key) {
+        paintFull(s_full, id, bgPicture_.get());
+        s_key = key;
+    }
+    (void)r;
+    c.drawImage(s_full, 0, 0);
+}
+
+bool AppUi::themedBackground() const {
+    return !settings_.themeBackground.empty() && settings_.themeBackground != "default";
+}
+
+// The band at the top that scrolled rows slide under: the background itself
+// with a background of the user's (seamless), else the plain colour.
+void AppUi::drawTopBand(Canvas& c, int h) {
+    if (!themedBackground()) {
+        c.fillRect({0, 0, kW, h}, kBg);
+        return;
+    }
+    c.setClip({0, 0, kW, h});
+    drawBackground(c);
+    c.resetClip();
+}
+
+void AppUi::drawBackgroundSwatch(Canvas& c, Rect r, const std::string& id) {
+    if (id == "choose") {
+        c.strokeRect(r, rgba(255, 255, 255, 120), 2, 6);
+        c.line(r.x + r.w / 2.0f - 8, r.y + r.h / 2.0f, r.x + r.w / 2.0f + 8, r.y + r.h / 2.0f, 3, kWhite);
+        c.line(r.x + r.w / 2.0f, r.y + r.h / 2.0f - 8, r.x + r.w / 2.0f, r.y + r.h / 2.0f + 8, 3, kWhite);
+        return;
+    }
+    if (id == "picture" && bgPicture_) {
+        static Image s_thumb;
+        static const Image* s_of = nullptr;
+        static int s_w = 0, s_h = 0;
+        if (s_of != bgPicture_.get() || s_w != r.w || s_h != r.h) {
+            s_thumb = coverResize(*bgPicture_, r.w, r.h);
+            s_of = bgPicture_.get(), s_w = r.w, s_h = r.h;
+        }
+        c.drawImage(s_thumb, r.x, r.y, 255, 6);
+    } else {
+        Color top, bottom, glow;
+        backgroundColours(id, top, bottom, glow);
+        c.gradientV(r, top, bottom);
+        // The glow as a dot inside the swatch (no clip: the list has its own).
+        if (alphaOf(glow)) {
+            const float rad = std::min(r.w, r.h) * 0.3f;
+            c.fillCircle(r.x + r.w - rad - 5.0f, r.y + rad + 5.0f, rad, withAlpha(glow, 150));
+        }
+    }
+    c.strokeRect(r, rgba(255, 255, 255, 90), 1, 6);
 }
 
 void AppUi::drawLogo(Canvas& c, float cx, float cy, float r) { drawBrandMark(c, cx, cy, r); }
@@ -301,8 +417,13 @@ bool AppUi::drawHero(Canvas& c, uint64_t nowMs, const std::string& url, bool det
     }
     // Darken towards the left (text) and the bottom (rows).
     c.gradientH({0, 0, details ? 1400 : 1200, kH}, rgba(0, 0, 0, details ? 240 : 225), rgba(0, 0, 0, 0));
+    const bool themed = !current && themedBackground();
     if (details) {
         c.gradientV({0, 640, kW, 440}, withAlpha(kBg, 0), withAlpha(kBg, 230));
+    } else if (themed) {
+        // The user's background stays visible under the rows.
+        c.gradientV({0, 360, kW, 420}, withAlpha(kBg, 0), withAlpha(kBg, 150));
+        c.fillRect({0, 780, kW, kH - 780}, withAlpha(kBg, 150));
     } else {
         c.gradientV({0, 360, kW, 420}, withAlpha(kBg, 0), kBg);
         c.fillRect({0, 780, kW, kH - 780}, kBg);
@@ -599,7 +720,7 @@ void AppUi::drawGrid(Canvas& c, const std::vector<GameTile>& tiles, int x0, int 
         if (!name.empty()) fonts_.semibold.draw(c, name[0], x, y + kCard + 12, 20, focused ? kWhite : kGray);
     }
     c.clearClip();
-    c.fillRect({0, 0, kW, clipTop}, kBg);
+    drawTopBand(c, clipTop);
     c.gradientV({0, clipTop, kW, 12}, kBg, withAlpha(kBg, 0));
 }
 
@@ -646,7 +767,7 @@ void AppUi::drawLibrary(Canvas& c, uint64_t nowMs) {
         if (!name.empty()) fonts_.semibold.draw(c, name[0], x, y + kCard + 12, 20, focused ? kWhite : kGray);
     }
     c.clearClip();
-    c.fillRect({0, 0, kW, clipTop}, kBg);
+    drawTopBand(c, clipTop);
     c.gradientV({0, clipTop, kW, 12}, kBg, withAlpha(kBg, 0));
     drawTopBar(c);
     drawTabs(c);
@@ -973,13 +1094,18 @@ void AppUi::drawHome(Canvas& c, uint64_t nowMs) {
             syncHeroToRowsLocked(focus->productId, focus->titleId, hero);
         }
     }
-    drawHero(c, nowMs, hero, false);
+    // The user's background under the art (it shows until art arrives, and
+    // all the time with Settings > Game art off).
+    if (themedBackground() || !settings_.themeGameArt) drawBackground(c);
+    drawHero(c, nowMs, settings_.themeGameArt ? hero : std::string(), false);
 
     if (rows_.empty()) {
         drawCentered(c, fonts_.semibold, tr(Str::NoGames), 500, 32, kGray);
         drawHints(c, {{kIconOptions, tr(Str::Settings)}, {kIconTouchpad, tr(Str::HoldSignOut)}});
-        c.fillRect({0, 0, kW, 140}, kBg);
-        c.gradientV({0, 140, kW, 16}, kBg, withAlpha(kBg, 0));
+        if (!themedBackground()) {  // nothing scrolls under it here: the background shows whole
+            c.fillRect({0, 0, kW, 140}, kBg);
+            c.gradientV({0, 140, kW, 16}, kBg, withAlpha(kBg, 0));
+        }
         drawTopBar(c);
         drawTabs(c);
         {
@@ -1073,7 +1199,7 @@ void AppUi::drawHome(Canvas& c, uint64_t nowMs) {
     }
 
     c.clearClip();
-    c.fillRect({0, 0, kW, clipTop}, kBg);
+    drawTopBand(c, clipTop);
     c.gradientV({0, clipTop, kW, 16}, kBg, withAlpha(kBg, 0));
 
     drawTopBar(c);
