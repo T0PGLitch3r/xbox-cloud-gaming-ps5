@@ -12,6 +12,11 @@ set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 option(XCLOUD_PS5 "Build for the PS5 (payload SDK)" OFF)
 option(XC_TARGET_PS4 "Build for the PS4 (OpenOrbis)" OFF)
 include(cmake/platform.cmake)
+if(MINGW)
+    # The C++ runtime, libunwind and winpthreads inside each executable: the
+    # portable folder then needs SDL3.dll only.
+    add_link_options(-static)
+endif()
 
 # Without a build type clang compiles at -O0, and the PS4's CPU cannot keep up: v1.5.5
 # for PS4 shipped that way and drew 2-7 fps. The PS4 build is optimised by default.
@@ -65,7 +70,41 @@ add_library(xcloud_core STATIC
     src/input/gyro.cpp
 )
 target_include_directories(xcloud_core PUBLIC src extern/stb extern/sqlite3)
-set_source_files_properties(extern/sqlite3/sqlite3.c PROPERTIES COMPILE_DEFINITIONS "SQLITE_THREADSAFE=1;SQLITE_OMIT_LOAD_EXTENSION=1;SQLITE_DEFAULT_MEMSTATUS=0;SQLITE_OS_UNIX=1;SQLITE_TEMP_STORE=3")
+# SQLite picks its Windows VFS by itself there; everywhere else the Unix one.
+if(XC_PLATFORM STREQUAL "windows")
+    set(_xc_sqlite_os "")
+else()
+    set(_xc_sqlite_os ";SQLITE_OS_UNIX=1")
+endif()
+set_source_files_properties(extern/sqlite3/sqlite3.c PROPERTIES COMPILE_DEFINITIONS "SQLITE_THREADSAFE=1;SQLITE_OMIT_LOAD_EXTENSION=1;SQLITE_DEFAULT_MEMSTATUS=0;SQLITE_TEMP_STORE=3${_xc_sqlite_os}")
+if(XC_PLATFORM STREQUAL "windows")
+    # POSIX names the shared code uses (sockets, poll, mkdir...) on Winsock / the CRT:
+    # src/platform/windows/compat, ahead of the toolchain's headers. Windows 10 or newer.
+    target_include_directories(xcloud_core BEFORE PUBLIC src/platform/windows/compat)
+    # _POSIX_THREAD_SAFE_FUNCTIONS: mingw-w64's localtime_r() / gmtime_r().
+    target_compile_definitions(xcloud_core PUBLIC _WIN32_WINNT=0x0A00 WIN32_LEAN_AND_MEAN NOMINMAX
+                                                  _CRT_SECURE_NO_WARNINGS _POSIX_THREAD_SAFE_FUNCTIONS)
+    # Vulkan's headers (display/gpu.cpp; the loader is the GPU driver's vulkan-1.dll, found
+    # by SDL at run time): the Vulkan SDK's, or a Vulkan-Headers checkout's include/.
+    set(XC_VULKAN_HEADERS "" CACHE PATH "Folder holding vulkan/vulkan.h (Windows build)")
+    if(XC_VULKAN_HEADERS)
+        target_include_directories(xcloud_core SYSTEM PUBLIC "${XC_VULKAN_HEADERS}")
+    endif()
+    # Updates: the GitHub repository whose releases carry the Windows build, and the
+    # public key they are signed with (tools/desktop/windows-release.sh signs).
+    set(XC_WINDOWS_UPDATE_REPO "" CACHE STRING "GitHub owner/repo the Windows app updates from (empty: no updates)")
+    set(XC_WINDOWS_RELEASE_KEY "${CMAKE_CURRENT_SOURCE_DIR}/windows/release-key.pem" CACHE FILEPATH
+        "Public key (PEM, ECDSA P-256) the Windows updates are signed with")
+    file(STRINGS "${XC_WINDOWS_RELEASE_KEY}" _xc_key_lines)
+    set(XC_WINDOWS_RELEASE_KEY_C "")
+    foreach(_l IN LISTS _xc_key_lines)
+        string(APPEND XC_WINDOWS_RELEASE_KEY_C " \"${_l}\\n\"")
+    endforeach()
+    configure_file(windows/windows_update.h.in "${CMAKE_CURRENT_BINARY_DIR}/generated/windows_update.h" @ONLY)
+    target_include_directories(xcloud_core PUBLIC "${CMAKE_CURRENT_BINARY_DIR}/generated")
+    # libsrtp's own warnings are not this build's to fail on (a printf format on LLP64).
+    set(ENABLE_WARNINGS_AS_ERRORS OFF CACHE BOOL "" FORCE)
+endif()
 if(NOT MSVC)
     set_source_files_properties(extern/sqlite3/sqlite3.c PROPERTIES COMPILE_FLAGS "-Wno-unused-parameter -Wno-sign-compare")
 endif()
@@ -166,7 +205,7 @@ add_library(xcloud_ui STATIC
     src/ui/components/trigger_tester_dialog.cpp
     src/app/update_check.cpp
     src/app/report.cpp
-    src/app/crash_guard.cpp
+    $<IF:$<STREQUAL:${XC_PLATFORM},windows>,src/app/crash_guard_windows.cpp,src/app/crash_guard.cpp>
     src/app/updater.cpp
     src/app/auto_deband.cpp
     src/app/gyro_calibration.cpp
@@ -289,7 +328,7 @@ elseif(XC_TARGET_PS4)
 else()
     target_link_libraries(xcloud_core PUBLIC Threads::Threads)
     if(WIN32 OR CMAKE_SYSTEM_NAME STREQUAL "Windows")
-        target_link_libraries(xcloud_core PUBLIC ws2_32 crypt32 iphlpapi winmm secur32)
+        target_link_libraries(xcloud_core PUBLIC ws2_32 bcrypt iphlpapi winmm shell32)
         target_sources(xcloud_core PRIVATE src/platform/windows/platform_windows.cpp)
     else()
         target_sources(xcloud_core PRIVATE src/platform/posix_common.cpp src/platform/linux/platform_linux.cpp)
@@ -377,6 +416,18 @@ if(XC_DESKTOP_APP)
                                         xcloud_ui xc_ffmpeg datachannel-static SDL3::SDL3)
     if(NOT MSVC)
         target_compile_options(psbox PRIVATE -Wall -Wextra -Wno-unused-parameter)
+    endif()
+    if(XC_PLATFORM STREQUAL "windows")
+        # The icon, the manifest (UTF-8 paths, per-monitor DPI) and the version resource.
+        set(XC_WIN_DIR "${CMAKE_CURRENT_SOURCE_DIR}/windows")
+        configure_file(windows/psbox.rc.in "${CMAKE_CURRENT_BINARY_DIR}/generated/psbox.rc" @ONLY)
+        target_sources(psbox PRIVATE "${CMAKE_CURRENT_BINARY_DIR}/generated/psbox.rc")
+        set_source_files_properties("${CMAKE_CURRENT_BINARY_DIR}/generated/psbox.rc" PROPERTIES
+            OBJECT_DEPENDS "${XC_WIN_DIR}/psbox.ico;${XC_WIN_DIR}/psbox.manifest")
+        # SDL3.dll beside the executable.
+        add_custom_command(TARGET psbox POST_BUILD
+            COMMAND ${CMAKE_COMMAND} -E copy_if_different "$<TARGET_FILE:SDL3::SDL3>" "$<TARGET_FILE_DIR:psbox>"
+            COMMENT "Copying SDL3.dll beside psbox")
     endif()
     # The fonts and certificates beside the executable (platform::assetDir()).
     add_custom_command(TARGET psbox POST_BUILD

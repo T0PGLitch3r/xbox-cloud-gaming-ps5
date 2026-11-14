@@ -607,6 +607,11 @@ bool VideoDecoder::init(int threads, bool preferHw) {
             enum AVHWDeviceType devType;
             enum AVPixelFormat pixFmt;
         } kHwConfigs[] = {
+#if defined(_WIN32)
+            // Windows: Direct3D 11 Video Acceleration first, which every GPU
+            // driver there has; its frames come back as NV12.
+            {AV_HWDEVICE_TYPE_D3D11VA, AV_PIX_FMT_D3D11},
+#endif
             // Vulkan Video first: the desktop build's FFmpeg has it (libvulkan
             // opened at run time); the others only where a build adds them.
             {AV_HWDEVICE_TYPE_VULKAN, AV_PIX_FMT_VULKAN},

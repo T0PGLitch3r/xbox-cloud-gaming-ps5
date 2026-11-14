@@ -8,6 +8,10 @@
 #include "util/json.h"
 #include "util/log.h"
 
+#if defined(_WIN32)
+#include "windows_update.h"
+#endif
+
 #include <mbedtls/pk.h>
 #include <mbedtls/sha256.h>
 #if defined(MBEDTLS_PSA_CRYPTO_C)
@@ -39,13 +43,27 @@
 
 namespace xc::app {
 
+#if defined(_WIN32)
+// The Windows package: PSBox/ with psbox.exe and VERSION.txt (the tag),
+// signed by the key of the repository it comes from (windows_update.h).
+const char* const kReleaseKey = XC_WINDOWS_RELEASE_KEY_PEM;
+#else
 const char* const kReleaseKey =
     "-----BEGIN PUBLIC KEY-----\n"
     "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEGyPKcF2L65xh03F1ZRzfhv48LOWS\n"
     "OBKQ55SVLod7HOZZiViUTbY47qETC8l9A1ez1RflBTH94WILhlHhC4xTeQ==\n"
     "-----END PUBLIC KEY-----\n";
+#endif
 
 namespace {
+
+#if defined(_WIN32)
+constexpr const char* kPackagePrefix = "PSBox/";
+constexpr const char* kMainFile = "psbox.exe";
+#else
+constexpr const char* kPackagePrefix = "PPSA99810/";
+constexpr const char* kMainFile = "eboot.bin";
+#endif
 
 constexpr size_t kMaxUnpacked = 256u << 20;  // far above a release (~50 MB)
 
@@ -287,17 +305,29 @@ bool installRelease(const Release& release, const std::string& dir, const std::s
     report(UpdateStep::Verifying, -1);
     if (!verifySignature(zip, sig, kReleaseKey, err)) return false;
     std::vector<ZipEntry> files;
-    if (!unzip(zip, "PPSA99810/", files, err)) return false;
+    if (!unzip(zip, kPackagePrefix, files, err)) return false;
     zip.clear();
     zip.shrink_to_fit();
     // The package must be that version: an older signed one can't be
     // offered again under a new tag.
+#if defined(_WIN32)
+    std::string wanted = release.tag, packaged;
+#else
     std::string wanted = contentVersionOf(release.tag), packaged;
+#endif
     bool hasEboot = false;
     for (const auto& f : files) {
-        hasEboot |= f.path == "eboot.bin";
+        hasEboot |= f.path == kMainFile;
+#if defined(_WIN32)
+        if (f.path == "VERSION.txt") {
+            packaged = f.data;
+            while (!packaged.empty() && (packaged.back() == '\n' || packaged.back() == '\r' || packaged.back() == ' '))
+                packaged.pop_back();
+        }
+#else
         if (f.path == "sce_sys/param.json")
             if (auto j = json::parse(f.data)) packaged = (*j)["contentVersion"].str();
+#endif
     }
     if (!hasEboot || wanted.empty() || packaged != wanted) {
         err = "the package is not " + release.tag + " (contentVersion " + (packaged.empty() ? "?" : packaged) + ")";
@@ -316,15 +346,22 @@ bool installRelease(const Release& release, const std::string& dir, const std::s
         std::string p = staged + "/" + f.path;
         // As the console's FTP servers leave a package's files: without the
         // execute bit, eboot.bin doesn't start (the restart then fails).
-        if (!makeParents(p) || !platform::writeFileAtomic(p, f.data) || ::chmod(p.c_str(), 0777) != 0) {
+#if defined(_WIN32)
+        const bool modeOk = true;  // no execute bit there
+#else
+        const bool modeOk = false;
+#endif
+        if (!makeParents(p) || !platform::writeFileAtomic(p, f.data) || (!modeOk && ::chmod(p.c_str(), 0777) != 0)) {
             err = "could not write " + p;
             removeTree(staged);
             return false;
         }
     }
-    // eboot.bin last: until then, a failure leaves the old app whole.
+    // eboot.bin (psbox.exe) last: until then, a failure leaves the old app
+    // whole. On Windows the running psbox.exe and SDL3.dll can be renamed
+    // (into update.old), not overwritten: the swap below only renames.
     std::stable_sort(files.begin(), files.end(),
-                     [](const ZipEntry& a, const ZipEntry& b) { return a.path != "eboot.bin" && b.path == "eboot.bin"; });
+                     [](const ZipEntry& a, const ZipEntry& b) { return a.path != kMainFile && b.path == kMainFile; });
     if (!platform::writeFileAtomic(dir + "/update.journal", "swapping\n")) {
         err = "could not write the update journal";
         removeTree(staged);

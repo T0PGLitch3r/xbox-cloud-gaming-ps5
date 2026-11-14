@@ -11,6 +11,7 @@
 #include "xcloud/catalog.h"
 
 #include <algorithm>
+#include <cctype>
 #include <cstdio>
 #include <cstdlib>
 #include <ctime>
@@ -23,9 +24,55 @@ namespace {
 constexpr const char* kClientHeader = "XboxComBrowser";
 constexpr int kLoginTries = 6;  // xCloud login: tries on a 5xx / no answer
 
+int g_identity = -1;  // DeviceIdentity; -1: not set yet (PSBOX_DEVICE decides)
+
+// An Xbox One console's description: the Xbox app's fields (which xCloud
+// accepts) with the console as the hardware and OS.
+std::string xboxOneInfo(bool prev) {
+    json::Value env = json::Value::object();
+    env.set("clientAppId", prev ? "play.xbox.com" : "Microsoft.GamingApp");
+    env.set("clientAppType", "native");
+    env.set("clientAppVersion", "2203.1001.4.0");
+    env.set("clientSdkVersion", "8.5.2");
+    env.set("httpEnvironment", "prod");
+    env.set("sdkInstallId", "");
+    json::Value app = json::Value::object();
+    app.set("env", env);
+    json::Value hw = json::Value::object();
+    hw.set("make", "Microsoft");
+    hw.set("model", "Xbox One");
+    hw.set("platformType", "console");
+    hw.set("sdktype", "native");
+    json::Value os = json::Value::object();
+    os.set("name", "Xbox");
+    os.set("ver", "10.0.25398.4909");
+    os.set("platform", "console");
+    json::Value dims = json::Value::object();
+    dims.set("widthInPixels", 1920);
+    dims.set("heightInPixels", 1080);
+    json::Value dpi = json::Value::object();
+    dpi.set("dpiX", 1);
+    dpi.set("dpiY", 1);
+    json::Value display = json::Value::object();
+    display.set("dimensions", dims);
+    display.set("pixelDensity", dpi);
+    json::Value dev = json::Value::object();
+    dev.set("hw", hw);
+    dev.set("os", os);
+    dev.set("displayInfo", display);
+    json::Value v = json::Value::object();
+    v.set("appInfo", app);
+    v.set("dev", dev);
+    return v.dump();
+}
+
 // Sent like the Windows Xbox app does: "Windows" plus a 1080p display is what
 // gets a 1080p stream; an Android device with a 720p display gets 720p.
 const std::string& deviceInfo(Resolution res, bool preview = true) {
+    if (deviceIdentity() == DeviceIdentity::XboxOne) {
+        static const std::string one_p = xboxOneInfo(true), one_np = xboxOneInfo(false);
+        return preview ? one_p : one_np;
+    }
     auto build = [](bool hd, bool prev, int w = 1920, int h = 1080) {
         json::Value env = json::Value::object();
         env.set("clientAppId", prev ? "play.xbox.com" : "Microsoft.GamingApp");
@@ -194,6 +241,22 @@ std::optional<json::Value> exchangePayload(const json::Value& v) {
     return std::nullopt;
 }
 }  // namespace
+
+void setDeviceIdentity(DeviceIdentity id) {
+    g_identity = static_cast<int>(id);
+    XC_LOGI("xCloud device identity: %s", id == DeviceIdentity::XboxOne ? "Xbox One console" : "automatic");
+}
+
+DeviceIdentity deviceIdentity() {
+    if (g_identity < 0) {
+        const char* env = std::getenv("PSBOX_DEVICE");
+        std::string v = env ? env : "";
+        for (char& c : v) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+        setDeviceIdentity(v == "xboxone" || v == "xbox-one" || v == "xbox one" || v == "console" ? DeviceIdentity::XboxOne
+                                                                                                 : DeviceIdentity::Auto);
+    }
+    return static_cast<DeviceIdentity>(g_identity);
+}
 
 const char* toString(SessionState s) {
     switch (s) {
@@ -499,10 +562,12 @@ bool GssvClient::startSession(const std::string& titleId, const std::string& loc
     settings.set("useIceConnection", false);
     settings.set("timezoneOffsetMinutes", 0);
     settings.set("sdkType", "web");
-    settings.set("osName", resolution_ == Resolution::P720       ? "android"
+    settings.set("osName", deviceIdentity() == DeviceIdentity::XboxOne ? "xbox"
+                           : resolution_ == Resolution::P720       ? "android"
                            : resolution_ == Resolution::P1080HQ ? "tizen"
                                                                 : "windows");
     settings.set("enableOptionalDataCollection", false);
+    if (deviceIdentity() == DeviceIdentity::XboxOne) XC_LOGI("xCloud session: starting as an Xbox One console");
 
     json::Value body = json::Value::object();
     bool home = offering_ == "xhome";

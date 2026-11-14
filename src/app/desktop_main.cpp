@@ -6,6 +6,7 @@
 #include "app/app_core.h"
 #include "app/desktop_selftest.h"
 #include "display/display_sdl.h"
+#include "xcloud/gssv.h"
 
 #include <SDL3/SDL.h>
 #include <SDL3/SDL_main.h>
@@ -19,12 +20,19 @@ namespace {
 
 void usage(std::FILE* to) {
     std::fprintf(to,
-                 "usage: psbox [--data-dir <dir>] [--fullscreen | --windowed] [--selftest <dir>]\n"
+                 "usage: psbox [--data-dir <dir>] [--fullscreen | --windowed] [--as-xbox-one] [--selftest <dir>]\n"
+#if defined(_WIN32)
+                 "  --data-dir <dir>   sign-in, settings and caches there (default %%XCLOUD_DATA_DIR%%,\n"
+                 "                     else %%LOCALAPPDATA%%\\psbox)\n"
+#else
                  "  --data-dir <dir>   sign-in, settings and caches there (default $XCLOUD_DATA_DIR,\n"
                  "                     else $XDG_DATA_HOME/psbox)\n"
+#endif
                  "  --fullscreen       start fullscreen this time (F11 or Alt+Enter switches)\n"
                  "  --windowed         start in a window this time (default: Settings > Display mode,\n"
                  "                     fullscreen at first)\n"
+                 "  --as-xbox-one      tell xCloud this is an Xbox One console, for games it offers to\n"
+                 "                     consoles only (experimental; also PSBOX_DEVICE=xboxone)\n"
                  "  --selftest <dir>   check the window, screens, input and sound; screenshots in <dir>\n");
 }
 
@@ -41,6 +49,8 @@ int main(int argc, char* argv[]) {
             xc::display::sdlStartFullscreen(true);
         } else if (!std::strcmp(a, "--windowed")) {
             xc::display::sdlStartFullscreen(false);
+        } else if (!std::strcmp(a, "--as-xbox-one")) {
+            xc::xcloud::setDeviceIdentity(xc::xcloud::DeviceIdentity::XboxOne);
         } else if (!std::strcmp(a, "--selftest") && hasValue) {
             selftest = argv[++i];
         } else if (!std::strcmp(a, "--help") || !std::strcmp(a, "-h")) {

@@ -16,6 +16,8 @@
 #include <algorithm>
 #include <cerrno>
 #include <cmath>
+#include "net/sock.h"
+
 #include <fcntl.h>
 #include <map>
 #include <netdb.h>
@@ -63,6 +65,16 @@ void checkForUpdate() {
     {
         std::lock_guard<std::mutex> lock(g_settingsMutex);
         skipped = g_settings.skippedUpdate == r.tag;
+    }
+    // The Windows app installs it straight away (it then starts again as the
+    // new version), unless the worker is already busy (a game starting):
+    // then it is offered as on the PS5.
+    if (offer && shell::caps().selfUpdate && !shell::caps().console) {
+        int idle = kNone;
+        if (g_command.compare_exchange_strong(idle, kUpdate)) {
+            XC_LOGI("update %s: installing it now", r.tag.c_str());
+            return;
+        }
     }
     if (offer && !skipped) g_ui->offerUpdate(r.notes);
 }
@@ -230,23 +242,23 @@ std::string probeStunUdp() {
         0x24, 0x55, 0x7A, 0xBC, 0xDE, 0xF0,
     };
     uint64_t t0 = platform::nowMs();
-    ssize_t sent = ::sendto(fd, req, sizeof(req), 0, res->ai_addr, res->ai_addrlen);
+    ssize_t sent = net::sockSendTo(fd, req, sizeof(req), 0, res->ai_addr, res->ai_addrlen);
     ::freeaddrinfo(res);
     if (sent != static_cast<ssize_t>(sizeof(req))) {
-        ::close(fd);
+        net::closeSocket(fd);
         return "UDP Blocked";
     }
-    pollfd pfd{};
+    net::PollFd pfd{};
     pfd.fd = fd;
     pfd.events = POLLIN;
-    int pr = ::poll(&pfd, 1, 900);
+    int pr = net::sockPoll(&pfd, 1, 900);
     if (pr <= 0) {
-        ::close(fd);
+        net::closeSocket(fd);
         return "UDP Filtered / Timeout";
     }
     uint8_t resp[128];
-    ssize_t got = ::recv(fd, resp, sizeof(resp), 0);
-    ::close(fd);
+    ssize_t got = net::sockRecv(fd, resp, sizeof(resp), 0);
+    net::closeSocket(fd);
     int rtt = static_cast<int>(platform::nowMs() - t0);
     if (got >= 20 && resp[0] == 0x01 && resp[1] == 0x01) {
         return "UDP Reachable (" + std::to_string(rtt) + " ms)";
@@ -267,28 +279,26 @@ int probeTcpConnect(const char* host, const char* port, int timeoutMs) {
         ::freeaddrinfo(res);
         return -1;
     }
-    int flags = ::fcntl(fd, F_GETFL, 0);
-    if (flags >= 0) ::fcntl(fd, F_SETFL, flags | O_NONBLOCK);
+    net::setNonBlocking(fd, true);
 
     uint64_t t0 = platform::nowMs();
     int rc = ::connect(fd, res->ai_addr, res->ai_addrlen);
     int rtt = -1;
     if (rc == 0) {
         rtt = static_cast<int>(platform::nowMs() - t0);
-    } else if (errno == EINPROGRESS) {
-        pollfd pfd{};
+    } else if (int e = net::sockErrno(); e == EINPROGRESS || e == EWOULDBLOCK) {
+        net::PollFd pfd{};
         pfd.fd = fd;
         pfd.events = POLLOUT;
-        int pr = ::poll(&pfd, 1, timeoutMs);
+        int pr = net::sockPoll(&pfd, 1, timeoutMs);
         if (pr > 0) {
             int err = 0;
-            socklen_t len = sizeof(err);
-            if (::getsockopt(fd, SOL_SOCKET, SO_ERROR, &err, &len) == 0 && err == 0) {
+            if (net::socketError(fd, err) && err == 0) {
                 rtt = static_cast<int>(platform::nowMs() - t0);
             }
         }
     }
-    ::close(fd);
+    net::closeSocket(fd);
     ::freeaddrinfo(res);
     return rtt;
 }

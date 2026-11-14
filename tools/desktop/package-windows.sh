@@ -36,30 +36,37 @@ trap 'rm -rf "$stage"' EXIT
 pkgdir=$stage/PSBox
 mkdir -p "$pkgdir" "$pkgdir/assets" "$pkgdir/licenses"
 
-if [[ -n "$exe" ]]; then
-    cp "$exe" "$pkgdir/psbox.exe"
-    ok "using binary: $exe -> psbox.exe"
-else
-    # Create placeholder binary if packaging offline without MinGW
-    echo "Notice: psbox.exe not found in $build; creating portable skeleton for distribution"
-    cat << 'EOF' > "$pkgdir/psbox.bat"
-@echo off
-echo PSBox Windows Launcher
-EOF
-    touch "$pkgdir/psbox.exe"
+[[ -n "$exe" ]] || fail "psbox.exe not found in $build (build it first: see cmake/windows-mingw.toolchain.cmake)"
+cp "$exe" "$pkgdir/psbox.exe"
+ok "using binary: $exe -> psbox.exe"
+# The tag the package is (the in-app updater checks it against the release's).
+printf '%s\n' "$version" > "$pkgdir/VERSION.txt"
+# Smaller without the debug information (the build keeps the unstripped one).
+strip_tool=$(command -v x86_64-w64-mingw32-strip || command -v llvm-strip || true)
+if [[ -n $strip_tool ]]; then
+    "$strip_tool" --strip-debug "$pkgdir/psbox.exe" && ok "debug information stripped"
 fi
 
-# Copy SDL3.dll if found
+# SDL3.dll: the one DLL the app needs beside it.
+sdl_found=""
 for sdl in "$build/SDL3.dll" "$build/bin/SDL3.dll" "$root/deps/SDL3.dll"; do
     if [[ -f $sdl ]]; then
         cp "$sdl" "$pkgdir/SDL3.dll"
         ok "bundled $sdl"
+        sdl_found=1
         break
     fi
 done
+[[ -n $sdl_found ]] || fail "SDL3.dll not found in $build"
+if [[ -n ${XC_SDL3_LICENSE:-} && -f $XC_SDL3_LICENSE ]]; then
+    cp "$XC_SDL3_LICENSE" "$pkgdir/licenses/SDL3-LICENSE.txt"
+fi
 
 # Assets and documentation
 cp -r "$root/assets/"* "$pkgdir/assets/"
+if [[ -f "$root/windows/psbox-xbox-one.bat" ]]; then
+    cp "$root/windows/psbox-xbox-one.bat" "$pkgdir/PSBox as Xbox One.bat"
+fi
 if [[ -f "$root/windows/README-windows.txt" ]]; then
     cp "$root/windows/README-windows.txt" "$pkgdir/README-windows.txt"
 fi

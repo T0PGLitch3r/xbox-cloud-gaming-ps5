@@ -6,7 +6,9 @@
 // into a quit event) ends the app in order, F11 / Alt+Enter switch
 // fullscreen (the setting follows), every event goes on to the input backend (pads, keyboard,
 // mouse); while a field wants text (setTextInput()) what is typed is kept
-// for it. Notices are toasts in the window; links open in the browser; no
+// for it. Notices are toasts in the window; links open in the browser. On
+// Windows, built with XC_WINDOWS_UPDATE_REPO, updates install themselves
+// (updater.h) and the app starts again as the new version; elsewhere no
 // update is installed (Settings opens the release page).
 #include "app/shell.h"
 
@@ -16,6 +18,14 @@
 #include "util/log.h"
 
 #include <SDL3/SDL.h>
+
+#if defined(_WIN32)
+#include "app/updater.h"
+#include "platform/platform.h"
+#include "windows_update.h"
+
+#include <windows.h>
+#endif
 
 #include <atomic>
 #include <csignal>
@@ -35,8 +45,46 @@ volatile std::sig_atomic_t g_signalled = 0;
 void onSignal(int) { g_signalled = 1; }
 }  // namespace
 
+#if defined(_WIN32)
+namespace {
+// This same psbox.exe again, with the same arguments; false when it can't.
+bool relaunch() {
+    wchar_t exe[MAX_PATH * 2];
+    DWORD n = GetModuleFileNameW(nullptr, exe, MAX_PATH * 2);
+    if (n == 0 || n >= MAX_PATH * 2) return false;
+    // update.old\psbox.exe once an update moved the running one aside: the
+    // new one is the app folder's (platform::appDir() was read at start).
+    std::wstring path(exe, n);
+    std::wstring folder = path.substr(0, path.find_last_of(L"\\/"));
+    const std::wstring oldDir = L"\\update.old";
+    if (folder.size() > oldDir.size() && folder.compare(folder.size() - oldDir.size(), oldDir.size(), oldDir) == 0)
+        path = folder.substr(0, folder.size() - oldDir.size()) + L"\\psbox.exe";
+    std::wstring cmd = GetCommandLineW();
+    STARTUPINFOW si{};
+    si.cb = sizeof si;
+    PROCESS_INFORMATION pi{};
+    if (!CreateProcessW(path.c_str(), cmd.data(), nullptr, nullptr, FALSE, 0, nullptr, nullptr, &si, &pi)) {
+        XC_LOGE("restart: could not start %ls (error %lu)", path.c_str(), GetLastError());
+        return false;
+    }
+    CloseHandle(pi.hThread);
+    CloseHandle(pi.hProcess);
+    return true;
+}
+}  // namespace
+#endif
+
 void beforeSettings() {
     platform::enableToasts(true);  // platform::notify() -> a toast in the window
+#if defined(_WIN32)
+    // An update cut short: its old files went back, and the old psbox.exe is
+    // the one to run. Else the last update's leftovers (the old psbox.exe it
+    // moved aside) go.
+    if (recoverUpdate(platform::appDir()) && relaunch()) {
+        std::fflush(nullptr);
+        std::_Exit(0);
+    }
+#endif
 }
 
 void beforeDisplay(const Settings& settings) {
@@ -150,15 +198,33 @@ bool pumpEvents() {
 }
 
 bool hasFocus() { return g_focus; }
+#if defined(_WIN32)
+bool canSelfUpdate() { return XC_WINDOWS_UPDATE_REPO[0] != 0; }
+// The app's own folder (where psbox.exe is), if Windows lets it be written:
+// not under Program Files without administrator rights.
+bool isInstalledCopy(const std::string& dir) {
+    if (dir != platform::appDir()) return false;
+    const std::string probe = dir + "\\update.write-test";
+    HANDLE h = CreateFileA(probe.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS,
+                           FILE_ATTRIBUTE_TEMPORARY | FILE_FLAG_DELETE_ON_CLOSE, nullptr);
+    if (h == INVALID_HANDLE_VALUE) {
+        XC_LOGW("update: %s can't be written to (error %lu)", dir.c_str(), GetLastError());
+        return false;
+    }
+    CloseHandle(h);
+    return true;
+}
+#else
 bool canSelfUpdate() { return false; }
 bool isInstalledCopy(const std::string&) { return false; }
+#endif
 
 void beforeShutdown() {
     input::kbmSetCaptured(false);
     input::sdlInputShutdown();
 }
 
-Caps caps() { return {false, true, false, true}; }
+Caps caps() { return {false, true, canSelfUpdate(), true}; }
 
 void setFullscreen(bool on) { display::sdlSetFullscreen(on); }
 
@@ -201,7 +267,10 @@ void setMouseHandler(std::function<void(const MouseEvent&)> handler) {
 }
 
 void restartOrExit() {
-    // Never asked (no update is installed here).
+#if defined(_WIN32)
+    // After an update: the new psbox.exe in this one's place.
+    if (relaunch()) XC_LOGI("update: the new version is starting");
+#endif
     std::fflush(nullptr);
     std::_Exit(0);
 }

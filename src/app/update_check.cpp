@@ -8,11 +8,32 @@
 #include <cstdio>
 #include <vector>
 
+#if defined(_WIN32)
+#include "windows_update.h"
+#endif
+#include <cstring>
+
 namespace xc::app {
 
 namespace {
 
+#if defined(_WIN32)
+// The Windows build is not upstream's: it comes from the repository the
+// build was made for (windows/windows_update.h.in), whose releases carry
+// PSBox-<tag>-windows-x86_64.zip and its .sig.
+constexpr const char* kLatestRelease = XC_WINDOWS_UPDATE_REPO[0]
+                                           ? "https://api.github.com/repos/" XC_WINDOWS_UPDATE_REPO "/releases/latest"
+                                           : "";
+constexpr bool kWindowsAssets = true;
+#else
 constexpr const char* kLatestRelease = "https://api.github.com/repos/RafaelNGP/psbox-cloud-gaming/releases/latest";
+constexpr bool kWindowsAssets = false;
+#endif
+
+bool endsWithStr(const std::string& s, const char* tail) {
+    size_t n = std::strlen(tail);
+    return s.size() >= n && s.compare(s.size() - n, n, tail) == 0;
+}
 
 // "v1.2.3" / "1.2" -> {1, 2, 3} / {1, 2, 0}; empty when it isn't a version.
 std::vector<int> parts(const std::string& v) {
@@ -46,6 +67,10 @@ std::string contentVersionOf(const std::string& version) {
 bool findLatestRelease(Release& out, std::string& err, const std::string& feedUrl) {
     net::Request req;
     req.url = feedUrl.empty() ? kLatestRelease : feedUrl;
+    if (req.url.empty()) {
+        err = "this build has no update source (XC_WINDOWS_UPDATE_REPO)";
+        return false;
+    }
     // A renamed repository answers 301: v1.6.3 and older never followed it and
     // stopped finding releases after the rename to psbox-cloud-gaming (#409).
     req.followRedirects = true;
@@ -68,6 +93,15 @@ bool findLatestRelease(Release& out, std::string& err, const std::string& feedUr
     for (size_t i = 0; i < assets.size(); ++i) {
         const auto& a = assets[i];
         std::string name = a["name"].str();
+        if (kWindowsAssets) {
+            if (name.rfind("PSBox-", 0) == 0 && endsWithStr(name, "-windows-x86_64.zip")) {
+                out.zipUrl = a["browser_download_url"].str();
+                out.zipSize = static_cast<long>(a["size"].asInt(-1));
+            } else if (name.rfind("PSBox-", 0) == 0 && endsWithStr(name, "-windows-x86_64.zip.sig")) {
+                out.sigUrl = a["browser_download_url"].str();
+            }
+            continue;
+        }
         if (name == "PPSA99810.zip" || (name.find("PS5") != std::string::npos && name.size() >= 4 && name.rfind(".zip") == name.size() - 4)) {
             if (out.zipUrl.empty() || name == "PPSA99810.zip") {
                 out.zipUrl = a["browser_download_url"].str();

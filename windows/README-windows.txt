@@ -36,6 +36,43 @@ Nothing is written to the program folder. Deleting %LOCALAPPDATA%\psbox\
 completely resets the app.
 
 
+What it needs
+-------------
+Windows 10 or 11, 64-bit. Keep psbox.exe, SDL3.dll and the assets folder
+together. The first start may show a Windows Firewall question: the app's
+remote web control listens on your home network (port 8080); "Cancel" is fine
+if you don't use it. Windows SmartScreen may warn about an unsigned app:
+"More info" > "Run anyway".
+
+Video is decoded by the GPU (Direct3D 11) when it can, else by the CPU;
+Settings > Video decoder chooses. The sharpening / upscaling filters need a
+GPU driver with Vulkan 1.3; without it the picture is drawn plainly.
+
+Updates
+-------
+The app looks for a new version each time it starts and, when there is one,
+installs it straight away and starts again as the new version (a game that is
+starting first: then it asks). Your sign-in and settings are kept: they live
+in %LOCALAPPDATA%\psbox, not in this folder. Keep the folder somewhere you can
+write to (Desktop, Documents, a games folder), not under Program Files.
+An update is only installed when it carries the right signature, and the old
+files go back if one is cut short.
+
+Xbox One mode (experimental)
+----------------------------
+"PSBox as Xbox One.bat" starts the app telling xCloud it is an Xbox One
+console instead of a PC (the same as psbox.exe --as-xbox-one, or setting
+PSBOX_DEVICE=xboxone). Some games are offered to consoles but not to PCs or
+browsers; this may make them show up. Games refused with "DeviceTypeNotAllowed"
+stay refused: that check goes by how you signed in, not by this. The stream is 1080p in this
+mode whatever Settings > Stream resolution says. If games stop starting
+("session failed"), go back to psbox.exe: xCloud may not accept the
+description. The log (below) says "starting as an Xbox One console" for
+each game started in this mode.
+
+If something goes wrong, the log is %LOCALAPPDATA%\psbox\xcloud.log.
+
+
 Controllers
 -----------
 Standard XInput controllers (Xbox One, Xbox Series, 8BitDo) work out of the box.

@@ -87,6 +87,17 @@ struct IceCandidate {
 // streams at a higher bitrate (Better xCloud's "1080p (HQ)").
 enum class Resolution { P1080, P720, P1440, P1080HQ };
 
+// What device the app says it is to xCloud (X-MS-Device-Info, the session's
+// osName). Auto: by Resolution, as above. XboxOne: an Xbox One console at
+// 1080p, whatever the resolution setting. Experimental: the console's own
+// client was not captured, so its fields are modelled on the Windows app's;
+// and the device kind that DeviceTypeNotAllowed checks comes from the sign-in
+// (see isDeviceTypeRefusal below), so it does not lift that refusal.
+// psbox --as-xbox-one, or PSBOX_DEVICE=xboxone in the environment.
+enum class DeviceIdentity { Auto, XboxOne };
+void setDeviceIdentity(DeviceIdentity id);
+DeviceIdentity deviceIdentity();
+
 // Some titles are licensed only for certain device kinds (allowedDeviceTypes without a PC/phone,
 // e.g. Killer Instinct 2 Classic): the play session is then refused with DeviceTypeNotAllowed. The
 // kind is set by the authenticated client (a real console or Samsung TV app), not by what we send,

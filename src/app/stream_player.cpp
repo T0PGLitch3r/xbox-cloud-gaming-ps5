@@ -31,7 +31,9 @@
 #include <thread>
 #include <utility>
 #include <vector>
-#if !defined(_WIN32)
+#if defined(_WIN32)
+#include <windows.h>
+#else
 #include <sys/resource.h>
 #endif
 
@@ -1859,7 +1861,12 @@ namespace {
 // The process's CPU time, every thread (system libraries' too): -1 where unknown.
 int64_t processCpuUs() {
 #if defined(_WIN32)
-    return -1;
+    FILETIME created, exited, kernel, user;
+    if (!GetProcessTimes(GetCurrentProcess(), &created, &exited, &kernel, &user)) return -1;
+    auto ticks = [](const FILETIME& t) {  // 100 ns each
+        return (static_cast<int64_t>(t.dwHighDateTime) << 32) | t.dwLowDateTime;
+    };
+    return (ticks(kernel) + ticks(user)) / 10;
 #else
     rusage u{};
     if (getrusage(RUSAGE_SELF, &u) != 0) return -1;

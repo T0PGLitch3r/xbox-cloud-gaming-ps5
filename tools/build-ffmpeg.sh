@@ -7,9 +7,11 @@
 #   tools/build-ffmpeg.sh host <build-dir>   -> <build-dir>/ffmpeg/{include,lib}
 #   tools/build-ffmpeg.sh ps5  <build-dir>
 #   tools/build-ffmpeg.sh ps4  <build-dir>
+#   tools/build-ffmpeg.sh windows <build-dir>   (cross build with llvm-mingw / mingw-w64:
+#       XC_MINGW_PREFIX, default x86_64-w64-mingw32-; XC_VULKAN_HEADERS for Vulkan Video)
 set -euo pipefail
 
-target=${1:?usage: build-ffmpeg.sh host|ps5|ps4 <build-dir>}
+target=${1:?usage: build-ffmpeg.sh host|ps5|ps4|windows <build-dir>}
 build=$(mkdir -p "${2:?build dir}" && cd "$2" && pwd)
 root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 prefix=$build/ffmpeg
@@ -76,6 +78,17 @@ elif [[ $target == ps4 ]]; then
         --ld="$cache/configure-ld.sh" \
         --extra-cflags="$flags" --extra-ldflags="" \
         --disable-pthreads --enable-pthreads
+elif [[ $target == windows ]]; then
+    # Windows x86_64, cross-compiled. Hardware H.264 through Direct3D 11 (every
+    # Windows GPU driver has it) and, with Vulkan headers at hand, Vulkan Video.
+    cross=${XC_MINGW_PREFIX:-x86_64-w64-mingw32-}
+    hw=(--enable-d3d11va --enable-hwaccel=h264_d3d11va,h264_d3d11va2)
+    if [[ -n ${XC_VULKAN_HEADERS:-} && -f $XC_VULKAN_HEADERS/vulkan/vulkan.h ]]; then
+        hw+=(--enable-vulkan --enable-hwaccel=h264_vulkan --extra-cflags="-I$XC_VULKAN_HEADERS")
+    fi
+    "$src/configure" "${common[@]}" \
+        --enable-cross-compile --target-os=mingw32 --arch=x86_64 \
+        --cross-prefix="$cross" --cc="${cross}clang" --enable-w32threads "${hw[@]}"
 else
     # Hardware H.264 decoding through Vulkan Video (FFmpeg opens libvulkan at
     # run time: no new dependency for the AppImage). Its configure wants

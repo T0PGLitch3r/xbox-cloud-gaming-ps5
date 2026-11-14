@@ -315,6 +315,7 @@ bool coreStartup() {
     if (!g_settings.load(settingsPath()) && ::stat(settingsPath().c_str(), &settingsStat) == 0) {
         // Unreadable (cut short?): kept aside, not overwritten by the defaults.
         std::string bad = settingsPath() + ".bad";
+        std::remove(bad.c_str());  // rename() does not replace a file on Windows
         std::rename(settingsPath().c_str(), bad.c_str());
         XC_LOGW("settings: %s could not be read; defaults used, the file kept as %s", settingsPath().c_str(), bad.c_str());
     }

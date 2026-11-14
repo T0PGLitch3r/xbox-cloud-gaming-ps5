@@ -2,6 +2,7 @@
 // Copyright (C) 2026 RafaelNGP
 #include <cstdint>
 #include "net/http.h"
+#include "net/sock.h"
 
 #include "platform/platform.h"
 #include "util/log.h"
@@ -84,10 +85,11 @@ int bioSend(void* ctx, const unsigned char* buf, size_t len) {
 #if defined(MSG_NOSIGNAL) && (MSG_NOSIGNAL != 0)
     flags = MSG_NOSIGNAL;  // a connection the server dropped: an error, not SIGPIPE
 #endif
-    ssize_t n = ::send(fd, buf, len, flags);
+    ssize_t n = sockSend(fd, buf, len, flags);
     if (n < 0) {
-        if (errno == EAGAIN || errno == EWOULDBLOCK) return MBEDTLS_ERR_SSL_TIMEOUT;
-        if (errno == EINTR) return MBEDTLS_ERR_SSL_WANT_WRITE;
+        int e = sockErrno();
+        if (e == EAGAIN || e == EWOULDBLOCK) return MBEDTLS_ERR_SSL_TIMEOUT;
+        if (e == EINTR) return MBEDTLS_ERR_SSL_WANT_WRITE;
         return MBEDTLS_ERR_NET_SEND_FAILED;
     }
     return static_cast<int>(n);
@@ -95,10 +97,11 @@ int bioSend(void* ctx, const unsigned char* buf, size_t len) {
 
 int bioRecv(void* ctx, unsigned char* buf, size_t len) {
     int fd = *static_cast<int*>(ctx);
-    ssize_t n = ::recv(fd, buf, len, 0);
+    ssize_t n = sockRecv(fd, buf, len, 0);
     if (n < 0) {
-        if (errno == EAGAIN || errno == EWOULDBLOCK) return MBEDTLS_ERR_SSL_TIMEOUT;
-        if (errno == EINTR) return MBEDTLS_ERR_SSL_WANT_READ;
+        int e = sockErrno();
+        if (e == EAGAIN || e == EWOULDBLOCK) return MBEDTLS_ERR_SSL_TIMEOUT;
+        if (e == EINTR) return MBEDTLS_ERR_SSL_WANT_READ;
         return MBEDTLS_ERR_NET_RECV_FAILED;
     }
     return static_cast<int>(n);  // 0 = peer closed
@@ -106,9 +109,7 @@ int bioRecv(void* ctx, unsigned char* buf, size_t len) {
 
 // Each request's own time limits (a kept-alive socket keeps the last ones).
 void setTimeouts(int fd, int timeoutMs) {
-    timeval tv{timeoutMs / 1000, (timeoutMs % 1000) * 1000};
-    ::setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof tv);
-    ::setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof tv);
+    setSocketTimeouts(fd, timeoutMs);
 }
 
 }  // namespace
@@ -151,21 +152,20 @@ int connectTcp(const std::string& host, int port, int timeoutMs, std::string& er
 
         int fd = ::socket(AF_INET, SOCK_STREAM, 0);
         if (fd < 0) {
-            lastErr = "socket() failed (errno " + std::to_string(errno) + ")";
+            lastErr = "socket() failed (errno " + std::to_string(sockErrno()) + ")";
             break;
         }
         setTimeouts(fd, remainingMs > 0 ? remainingMs : timeoutMs);
         int one = 1;
-        ::setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, &one, sizeof one);
+        setSockOpt(fd, IPPROTO_TCP, TCP_NODELAY, &one, sizeof one);
 #ifdef SO_NOSIGPIPE
-        ::setsockopt(fd, SOL_SOCKET, SO_NOSIGPIPE, &one, sizeof one);
+        setSockOpt(fd, SOL_SOCKET, SO_NOSIGPIPE, &one, sizeof one);
 #endif
         // A larger window: catalog responses are hundreds of KB from far away.
         int buf = 1 << 20;
-        ::setsockopt(fd, SOL_SOCKET, SO_RCVBUF, &buf, sizeof buf);
+        setSockOpt(fd, SOL_SOCKET, SO_RCVBUF, &buf, sizeof buf);
 
-        int on = 1;
-        ::ioctl(fd, FIONBIO, &on);
+        setNonBlocking(fd, true);
 
         sockaddr_in sa{};
         sa.sin_family = AF_INET;
@@ -174,45 +174,44 @@ int connectTcp(const std::string& host, int port, int timeoutMs, std::string& er
 
         int rc = ::connect(fd, reinterpret_cast<sockaddr*>(&sa), sizeof sa);
         if (rc != 0) {
-            if (errno == EINPROGRESS || errno == EWOULDBLOCK) {
-                struct pollfd pfd{};
+            int connectErr = sockErrno();
+            if (connectErr == EINPROGRESS || connectErr == EWOULDBLOCK) {
+                PollFd pfd{};
                 pfd.fd = fd;
                 pfd.events = POLLOUT;
                 int connectTimeout = (remainingMs > 0) ? std::min(remainingMs, 10000) : 10000;
                 if (addrs.size() > 1 && (remainingMs <= 0 || remainingMs > 3000)) {
                     connectTimeout = (remainingMs > 0) ? std::min(remainingMs, 3000) : 3000;
                 }
-                int pr = ::poll(&pfd, 1, connectTimeout);
+                int pr = sockPoll(&pfd, 1, connectTimeout);
                 if (pr <= 0) {
                     lastErr = (pr == 0) ? "connect timed out to " + host + ":" + std::to_string(port) + " [" + ipStr + "]"
-                                        : "poll failed connecting to " + host + ":" + std::to_string(port) + " [" + ipStr + "] (errno " + std::to_string(errno) + ")";
-                    ::close(fd);
+                                        : "poll failed connecting to " + host + ":" + std::to_string(port) + " [" + ipStr + "] (errno " + std::to_string(sockErrno()) + ")";
+                    closeSocket(fd);
                     if (i + 1 < addrs.size()) {
                         XC_LOGW("%s, trying next IP (%zu/%zu)", lastErr.c_str(), i + 2, addrs.size());
                     }
                     continue;
                 }
                 int so_error = 0;
-                socklen_t len = sizeof so_error;
-                if (::getsockopt(fd, SOL_SOCKET, SO_ERROR, &so_error, &len) < 0 || so_error != 0) {
-                    lastErr = "connect failed to " + host + ":" + std::to_string(port) + " [" + ipStr + "] (errno " + std::to_string(so_error ? so_error : errno) + ")";
-                    ::close(fd);
+                if (!socketError(fd, so_error) || so_error != 0) {
+                    lastErr = "connect failed to " + host + ":" + std::to_string(port) + " [" + ipStr + "] (errno " + std::to_string(so_error ? so_error : sockErrno()) + ")";
+                    closeSocket(fd);
                     if (i + 1 < addrs.size()) {
                         XC_LOGW("%s, trying next IP (%zu/%zu)", lastErr.c_str(), i + 2, addrs.size());
                     }
                     continue;
                 }
             } else {
-                lastErr = "connect failed to " + host + ":" + std::to_string(port) + " [" + ipStr + "] (errno " + std::to_string(errno) + ")";
-                ::close(fd);
+                lastErr = "connect failed to " + host + ":" + std::to_string(port) + " [" + ipStr + "] (errno " + std::to_string(connectErr) + ")";
+                closeSocket(fd);
                 if (i + 1 < addrs.size()) {
                     XC_LOGW("%s, trying next IP (%zu/%zu)", lastErr.c_str(), i + 2, addrs.size());
                 }
                 continue;
             }
         }
-        on = 0;
-        ::ioctl(fd, FIONBIO, &on);
+        setNonBlocking(fd, false);
         return fd;
     }
 
@@ -434,7 +433,7 @@ struct PooledConn {
             mbedtls_ssl_free(&ssl);
             mbedtls_ssl_config_free(&conf);
         }
-        if (fd >= 0) ::close(fd);
+        if (fd >= 0) closeSocket(fd);
     }
 };
 using Conns = std::vector<std::unique_ptr<PooledConn>>;
@@ -460,8 +459,8 @@ public:
             if (mine && !expired) {
                 // Readable while idle: the server closed it (or sent
                 // something unasked); not usable either way.
-                struct pollfd pfd{(*it)->fd, POLLIN, 0};
-                if (::poll(&pfd, 1, 0) == 0) {
+                PollFd pfd{(*it)->fd, POLLIN, 0};
+                if (sockPoll(&pfd, 1, 0) == 0) {
                     found = std::move(*it);
                     it = pool_.erase(it);
                     continue;

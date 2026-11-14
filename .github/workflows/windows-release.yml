@@ -1,0 +1,137 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# The Windows build, for a fork of RafaelNGP/psbox-cloud-gaming whose
+# `windows` branch carries the Windows port.
+#
+# Every 6 hours: when upstream has a release this repository doesn't, its
+# tag is merged into `windows`, built with llvm-mingw, packaged, signed with
+# the WINDOWS_RELEASE_KEY secret (the private half of windows/release-key.pem)
+# and published here as a release: PSBox-<tag>-windows-x86_64.zip and .sig,
+# which the app (built with XC_WINDOWS_UPDATE_REPO = this repository) finds
+# and installs by itself. A merge that conflicts fails the run, and GitHub
+# emails the repository's owner: the port then needs updating by hand.
+#
+# "Run workflow" (Actions tab) does the same now; `tag` builds that one.
+name: Windows release
+
+on:
+  schedule:
+    - cron: '17 */6 * * *'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Upstream tag to build (empty: the latest release)'
+        required: false
+        default: ''
+
+permissions:
+  contents: write
+
+concurrency:
+  group: windows-release
+  cancel-in-progress: false
+
+env:
+  UPSTREAM: RafaelNGP/psbox-cloud-gaming
+  LLVM_MINGW: '20250114'
+  SDL3: '3.4.20'
+  VULKAN_HEADERS: 'v1.4.309'
+
+jobs:
+  release:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Find the upstream release to build
+        id: tag
+        env:
+          GH_TOKEN: ${{ github.token }}
+          WANTED: ${{ inputs.tag }}
+        run: |
+          set -euo pipefail
+          tag=${WANTED:-$(gh api "repos/$UPSTREAM/releases/latest" --jq .tag_name)}
+          echo "upstream release: $tag"
+          if gh release view "$tag" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "already built here: nothing to do"
+            echo "build=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "build=true" >> "$GITHUB_OUTPUT"
+          fi
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+
+      - name: Check out the Windows port
+        if: steps.tag.outputs.build == 'true'
+        uses: actions/checkout@v4
+        with:
+          ref: windows
+          fetch-depth: 0
+
+      - name: Merge the upstream release into it
+        if: steps.tag.outputs.build == 'true'
+        env:
+          TAG: ${{ steps.tag.outputs.tag }}
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git remote add upstream "https://github.com/$UPSTREAM.git" 2>/dev/null || true
+          git fetch --no-tags upstream "refs/tags/$TAG:refs/tags/upstream-$TAG"
+          if ! git merge --no-edit -m "Merge upstream $TAG into windows" "upstream-$TAG"; then
+            echo "::error::upstream $TAG conflicts with the Windows port: these files need merging by hand"
+            git diff --name-only --diff-filter=U
+            exit 1
+          fi
+          git submodule update --init --recursive --depth 1 deps/mbedtls deps/libdatachannel deps/ffmpeg
+
+      - name: Install the tools
+        if: steps.tag.outputs.build == 'true'
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq ninja-build cmake pkg-config nasm
+          cd "$RUNNER_TEMP"
+          curl -sSfL -o llvm-mingw.tar.xz "https://github.com/mstorsjo/llvm-mingw/releases/download/$LLVM_MINGW/llvm-mingw-$LLVM_MINGW-ucrt-ubuntu-20.04-x86_64.tar.xz"
+          tar xf llvm-mingw.tar.xz && mv "llvm-mingw-$LLVM_MINGW-ucrt-ubuntu-20.04-x86_64" llvm-mingw
+          curl -sSfL "https://github.com/libsdl-org/SDL/releases/download/release-$SDL3/SDL3-devel-$SDL3-mingw.tar.gz" | tar xz
+          git clone -q --depth 1 --branch "$VULKAN_HEADERS" https://github.com/KhronosGroup/Vulkan-Headers.git vulkan-headers
+          echo "$RUNNER_TEMP/llvm-mingw/bin" >> "$GITHUB_PATH"
+
+      - name: Build
+        if: steps.tag.outputs.build == 'true'
+        run: |
+          set -euo pipefail
+          cmake -S . -B build-win -G Ninja -DCMAKE_BUILD_TYPE=RelWithDebInfo \
+            -DCMAKE_TOOLCHAIN_FILE=cmake/windows-mingw.toolchain.cmake \
+            -DCMAKE_PREFIX_PATH="$RUNNER_TEMP/SDL3-$SDL3/x86_64-w64-mingw32" \
+            -DXC_VULKAN_HEADERS="$RUNNER_TEMP/vulkan-headers/include" \
+            -DXCLOUD_DESKTOP_APP=ON -DXC_WINDOWS_UPDATE_REPO="$GITHUB_REPOSITORY"
+          ninja -C build-win psbox
+
+      - name: Package and sign
+        if: steps.tag.outputs.build == 'true'
+        env:
+          TAG: ${{ steps.tag.outputs.tag }}
+          WINDOWS_RELEASE_KEY: ${{ secrets.WINDOWS_RELEASE_KEY }}
+        run: |
+          set -euo pipefail
+          [ -n "$WINDOWS_RELEASE_KEY" ] || { echo "::error::the WINDOWS_RELEASE_KEY secret is not set"; exit 1; }
+          XC_VERSION="$TAG" XC_SDL3_LICENSE="$RUNNER_TEMP/SDL3-$SDL3/LICENSE.txt" \
+            tools/desktop/package-windows.sh build-win dist
+          umask 077
+          printf '%s\n' "$WINDOWS_RELEASE_KEY" > "$RUNNER_TEMP/key.pem"
+          tools/desktop/windows-release.sh "dist/PSBox-$TAG-windows-x86_64.zip" "$RUNNER_TEMP/key.pem"
+          rm -f "$RUNNER_TEMP/key.pem"
+
+      - name: Publish
+        if: steps.tag.outputs.build == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.tag.outputs.tag }}
+        run: |
+          set -euo pipefail
+          git push origin HEAD:windows
+          notes=$(gh release view "$TAG" --repo "$UPSTREAM" --json body --jq .body || true)
+          gh release create "$TAG" --repo "$GITHUB_REPOSITORY" --target windows \
+            --title "PSBox $TAG for Windows" \
+            --notes "Windows build of upstream $TAG (https://github.com/$UPSTREAM/releases/tag/$TAG), made automatically. The app installs it by itself.
+
+          $notes" \
+            "dist/PSBox-$TAG-windows-x86_64.zip" "dist/PSBox-$TAG-windows-x86_64.zip.sig"

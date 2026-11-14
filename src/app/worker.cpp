@@ -186,6 +186,19 @@ bool isDnsOrSinkholeError(const std::string& err) {
            err.find("0x804101e1") != std::string::npos;
 }
 
+// Once per run, in the background: after the sign-in, or (an app that
+// updates itself without asking: Windows) at the start, signed in or not.
+void startUpdateCheck() {
+    static std::atomic<bool> updateChecked{false};
+    static platform::Thread s_updateThread;
+    if (!(g_autoplay.title.empty() || g_autoplay.title == "UPDATE" || !g_autoplay.updateFeed.empty())) return;
+    if (updateChecked.exchange(true)) return;
+    platform::startThread(s_updateThread, [] {
+        platform::setThreadAffinity(platform::ThreadRole::Worker, "xcloud_upd");
+        checkForUpdate();
+    }, 512u << 10);
+}
+
 void signInAndLoad(auth::AuthManager& am, xcloud::GssvClient& gssv) {
     if (!platform::dataDirWritable()) {
         std::string pathAndErr = platform::dataDir() + " (errno " + std::to_string(platform::dataDirErrno()) + ")";
@@ -330,15 +343,7 @@ void signInAndLoad(auth::AuthManager& am, xcloud::GssvClient& gssv) {
         if (changed) updateLibraryFavorites(favorites);
     }
     platform::notify(ui::trf(ui::Str::SignedInAs, am.profile().gamertag), "signed in (notification)");
-    static bool updateChecked = false;
-    static platform::Thread s_updateThread;
-    if (!updateChecked && (g_autoplay.title.empty() || g_autoplay.title == "UPDATE" || !g_autoplay.updateFeed.empty())) {
-        updateChecked = true;
-        platform::startThread(s_updateThread, [] {
-            platform::setThreadAffinity(platform::ThreadRole::Worker, "xcloud_upd");
-            checkForUpdate();
-        }, 512u << 10);
-    }
+    startUpdateCheck();
     std::vector<std::string> regions;
     for (const auto& r : gssv.session().regions) regions.push_back(r.name);
     const xcloud::Region* def = gssv.session().defaultRegion();
@@ -671,6 +676,7 @@ void worker() {
     }
     auth::AuthManager am(accountPath());  // this console user's own sign-in
     xcloud::GssvClient gssv, home("xhome");
+    if (shell::caps().selfUpdate && !shell::caps().console) startUpdateCheck();
     for (;;) {
         int cmd = g_command.exchange(kNone);
         g_cancel = false;
