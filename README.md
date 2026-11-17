@@ -30,8 +30,9 @@ You need a Microsoft account, with Game Pass Ultimate for most of the catalog.
 
 ## What this fork adds
 
-- **Windows app**: a portable folder (`psbox.exe`, `SDL3.dll`, `assets`),
-  nothing to install. Sign-in and settings are kept in
+- **Windows releases**: upstream now has its own Windows port but only builds
+  it in CI; this fork publishes it as a portable folder (`psbox.exe`,
+  `SDL3.dll`, `assets`), nothing to install. Sign-in and settings are kept in
   `%LOCALAPPDATA%\psbox`.
 - **Automatic updates**: the app checks for a new version each time it
   starts, installs it and restarts. Each update is signed, and the old files
@@ -68,30 +69,29 @@ folder: it holds your sign-in.
 
 ## Building
 
-The Windows app is cross-built on Linux with
-[llvm-mingw](https://github.com/mstorsjo/llvm-mingw), SDL3's mingw package
-(`SDL3-devel-*-mingw`) and
-[Vulkan-Headers](https://github.com/KhronosGroup/Vulkan-Headers). The source is
-on the [`windows`](https://github.com/T0PGLitch3r/xbox-cloud-gaming-ps5/tree/windows)
+The Windows app is cross-built on Linux with upstream's own Windows tooling
+(llvm-mingw and SDL3's MinGW package, fetched by `tools/windows`). The source
+is on the [`windows`](https://github.com/T0PGLitch3r/xbox-cloud-gaming-ps5/tree/windows)
 branch:
 
 ```bash
 git clone --recursive --branch windows https://github.com/T0PGLitch3r/xbox-cloud-gaming-ps5.git
 cd xbox-cloud-gaming-ps5
+bash tools/windows/fetch-toolchain.sh             # llvm-mingw + Vulkan headers -> ~/.cache/xcloud-ps5
+bash tools/windows/fetch-sdl3.sh ~/sdl3-mingw     # SDL3's MinGW package
 cmake -S . -B build-win -G Ninja -DCMAKE_BUILD_TYPE=RelWithDebInfo \
-      -DCMAKE_TOOLCHAIN_FILE=cmake/windows-mingw.toolchain.cmake \
-      -DCMAKE_PREFIX_PATH=/path/to/SDL3-x.y.z/x86_64-w64-mingw32 \
-      -DXC_VULKAN_HEADERS=/path/to/Vulkan-Headers/include \
+      -DCMAKE_TOOLCHAIN_FILE=cmake/windows.toolchain.cmake \
+      -DCMAKE_PREFIX_PATH=$HOME/sdl3-mingw/x86_64-w64-mingw32 \
       -DXCLOUD_DESKTOP_APP=ON
 ninja -C build-win psbox
-XC_VERSION=v1.7.2 tools/desktop/package-windows.sh build-win dist   # -> dist/PSBox-v1.7.2-windows-x86_64.zip
-wine build-win/psbox.exe --selftest out                              # optional: the built-in self-test
+XC_VERSION=v1.7.6 XC_SDL3_MINGW=~/sdl3-mingw tools/desktop/package-windows.sh build-win dist
+SDL_VIDEO_DRIVER=offscreen wine build-win/psbox.exe --selftest out   # optional: the built-in self-test
 ```
 
-Requirements: CMake 3.20+, Ninja, Python 3 and curl. FFmpeg is configured and
-built the first time CMake runs. For a build that updates itself, add
-`-DXC_WINDOWS_UPDATE_REPO=<owner>/<repo>`, and sign each release zip with
-`tools/desktop/windows-release.sh` using the private half of
+Requirements: CMake 3.20+, Ninja, NASM, Python 3 and curl. FFmpeg is
+configured and built the first time CMake runs. For a build that updates
+itself, add `-DXC_WINDOWS_UPDATE_REPO=<owner>/<repo>`, and sign each release
+zip with `tools/desktop/windows-release.sh` using the private half of
 `windows/release-key.pem` (the `WINDOWS_RELEASE_KEY` secret in Actions).
 
 ## License
