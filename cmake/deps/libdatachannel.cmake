@@ -9,6 +9,7 @@ set(NO_EXAMPLES ON CACHE BOOL "" FORCE)
 set(NO_TESTS ON CACHE BOOL "" FORCE)
 set(BUILD_SHARED_LIBS OFF CACHE BOOL "" FORCE)
 set(BUILD_WITH_WARNINGS OFF CACHE BOOL "" FORCE)
+set(ENABLE_WARNINGS_AS_ERRORS OFF CACHE BOOL "" FORCE)
 
 # cmake/modules/FindMbedTLS.cmake maps find_package(MbedTLS) to deps/mbedtls.
 list(PREPEND CMAKE_MODULE_PATH "${CMAKE_SOURCE_DIR}/cmake/modules")
@@ -25,3 +26,8 @@ if(XC_TARGET_PS4)
 endif()
 
 add_subdirectory(deps/libdatachannel ${CMAKE_BINARY_DIR}/libdatachannel EXCLUDE_FROM_ALL)
+# llvm-mingw 20261104's libc++ no longer brings <algorithm> in through <regex>:
+# libdatachannel's configuration.cpp uses std::transform without including it.
+if(WIN32 AND TARGET datachannel-static)
+    target_compile_options(datachannel-static PRIVATE "SHELL:-include algorithm")
+endif()

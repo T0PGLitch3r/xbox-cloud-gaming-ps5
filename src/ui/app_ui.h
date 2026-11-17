@@ -24,6 +24,10 @@
 #include <string_view>
 #include <vector>
 
+namespace xc::app::shell {
+struct TouchEvent;
+}
+
 namespace xc::ui {
 
 enum class Str;  // ui/strings.h
@@ -189,6 +193,7 @@ struct UiCaps {
     // fullscreen). The one row only a desktop has, so false by default: the
     // PS5's Settings stay as they are.
     bool desktopWindow = false;
+    bool trophies = true;          // PlayStation trophy sync and management (PS5/PS4 consoles only)
     bool operator==(const UiCaps&) const = default;
 };
 
@@ -211,7 +216,7 @@ std::vector<SettingsRowPos> visibleGameSettingsRows(const UiCaps& caps, bool cus
 
 // The largest stick dead zone Settings offers, in percent of the travel.
 constexpr int kMaxDeadzone = 30;
-constexpr int kSettingRows = 31;  // + accent colour, background, game art behind the home screen  // language, resolution, region, dead zone, triggers, confirm, light bar, updates,
+constexpr int kSettingRows = 31;  // + 28 accent colour, 29 background, 30 game art; language, resolution, region, dead zone, triggers, confirm, light bar, updates,
                                   // sign-in country, 120 Hz output, bitrate cap, game volume, keyboard keys,
                                   // display mode (a desktop's window), controller buttons, gyro aiming, queue chime,
                                   // check sign-in, network test, support project, video decoder, audio-to-haptics,
@@ -265,7 +270,8 @@ enum class Action {
     SyncTrophies,   // synchronize Xbox achievements to PlayStation trophies
     RemoveTrophies, // remove local PSBox trophy packages
     TestQueueAlert, // play test chime and vibration for queue-ready alert
-    ResetSettings   // restore settings to default
+    ResetSettings,  // restore settings to default
+    CopyClipboard   // copy pairing code to system clipboard
 };
 
 // How "Your games" is sorted (R3).
@@ -290,6 +296,7 @@ struct UiEvent {
     LibrarySort librarySort = LibrarySort::Recent;
     std::string reportWhat;  // Report: the error on screen (empty from Settings)
     std::string url;         // OpenUrl
+    std::string clipboardText; // CopyClipboard
 };
 
 // "SOUTHCENTRALUS" -> "South Central US".
@@ -521,6 +528,7 @@ public:
     UiEvent onMouseMove(float x, float y);
     UiEvent onMouseDown(float x, float y, int button);
     UiEvent onMouseWheel(float dx, float dy);
+    UiEvent onTouch(const app::shell::TouchEvent& ev);
     float mouseCursorX() const { return mouseCursorX_; }
     float mouseCursorY() const { return mouseCursorY_; }
     bool mouseCursorVisible() const { return mouseCursorVisible_; }
@@ -540,6 +548,7 @@ public:
     void render(Canvas& c, uint64_t nowMs);
 
 private:
+    UiEvent handlePointerDown(float x, float y, int button, bool showCursor);
     struct Anim {
         float value = 0, target = 0;
         bool step(float dt);  // true while moving
@@ -836,6 +845,7 @@ private:
     std::vector<uint32_t> wheel_;  // the wheel's pixels at wheelValue_
     float wheelValue_ = -1;
     int settingsRow_ = 0;
+    float settingsScrollY_ = 0.0f;
     bool dropdownOpen_ = false;  // the list of the focused settings row
     int dropdownIndex_ = 0, dropdownTop_ = 0;
     uint64_t signOutHoldStart_ = 0;  // TOUCHPAD hold in progress
@@ -876,5 +886,21 @@ private:
     bool mouseCursorVisible_ = false;
     uint64_t mouseCursorVisibleUntil_ = 0;
     void drawMouseCursor(Canvas& c, float cursorX, float cursorY);
+
+    struct TouchTracker {
+        bool active = false;
+        uint64_t fingerId = 0;
+        float startX = 0.0f, startY = 0.0f;
+        float lastX = 0.0f, lastY = 0.0f;
+        uint64_t startTimeMs = 0;
+        uint64_t lastTimeMs = 0;
+        bool isDragging = false;
+        float velocityY = 0.0f;
+        float velocityX = 0.0f;
+    };
+    TouchTracker touchTracker_;
+
+    UiEvent handleLocked(const NavInput& in);
+    mutable std::vector<std::pair<int, Rect>> hintRects_;
 };
 }  // namespace xc::ui

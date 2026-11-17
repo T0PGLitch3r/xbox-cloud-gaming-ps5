@@ -38,6 +38,8 @@ struct GameProfile {
     bool triggerPulses = false;
     int triggerProfile = 0;      // 0 Standard, 1 Shooter, 2 Racing
     int audioHaptics = 0;        // 0 Off, 1 Low, 2 Med, 3 High
+    bool vibrationEnabled = true; // Controller rumble enabled
+    int touchOpacity = 80;       // On-screen touch controls base opacity (20..100%)
     bool circleConfirms = false;
     // Display
     bool highRefresh = false;    // 120 Hz output (VRR) while streaming
@@ -98,6 +100,15 @@ struct Settings {
     bool streamStats = false;
     uint32_t statsMask = 0x1F;  // StatsDefaultMask (Fps, Bitrate, Latency, Loss, Graph)
     // Sharpening of the game picture: 0 off, 1..3 low, medium (FSR RCAS), high.
+#if defined(__ANDROID__)
+    int sharpness = 0;
+    // Smoothing of compression blocks (GPU display): 0 off, 1 low, 2 high,
+    // 3 auto (stronger as the bitrate falls).
+    int deband = 0;
+    // Upscaling to the 4K display (GPU): 0 FSR 1, 1 Anime4K, 2 FSR and 3
+    // Anime4K after Anime4K Restore (the clean-up of compression artefacts).
+    int upscaler = 0;
+#else
     int sharpness = 2;
     // Smoothing of compression blocks (GPU display): 0 off, 1 low, 2 high,
     // 3 auto (stronger as the bitrate falls).
@@ -105,6 +116,7 @@ struct Settings {
     // Upscaling to the 4K display (GPU): 0 FSR 1, 1 Anime4K, 2 FSR and 3
     // Anime4K after Anime4K Restore (the clean-up of compression artefacts).
     int upscaler = 2;
+#endif
     int videoDecoder = 0;  // 0 Hardware, 1 Software
     // Controller: stick dead zone (percent), vibration in the triggers,
     // Circle as the confirm button (Xbox A).
@@ -117,6 +129,8 @@ struct Settings {
     bool triggerPulses = false;  // pulses of the resistance instead of the motor vibrating
     int triggerProfile = 0;      // 0 Standard, 1 Shooter, 2 Racing
     int audioHaptics = 0;        // 0 Off, 1 Low, 2 Med, 3 High
+    bool vibrationEnabled = true; // Controller rumble enabled
+    int touchOpacity = 80;       // On-screen touch controls base opacity (20..100%)
     bool circleConfirms = false;
     // The DualSense light bar: 0 the colour of the game in focus, 1
     // lightBarColour, 2 off.
@@ -186,6 +200,8 @@ struct Settings {
     // without and with strum; empty: the defaults.
     std::string guitarLanes, guitarStrumLanes;
     bool soloInputRedirect = false;
+    int touchOverlayMode = 0;  // 0: Auto (Auto-hide on physical controller), 1: Always On, 2: Always Off
+    bool touchInvertSticks = false;
     std::map<std::string, uint64_t> titlePlaytime; // accumulated playtime in seconds (productId or titleId -> seconds)
 
     uint64_t playtimeForGame(const std::string& productId, const std::string& titleId) const {

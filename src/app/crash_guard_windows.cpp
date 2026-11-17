@@ -1,18 +1,20 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Copyright (C) 2026 RafaelNGP
-// crash_guard.h on Windows: an unhandled structured exception (access
-// violation, illegal instruction...) or an uncaught C++ exception writes the
-// marker the next start reads, in the same three lines as crash_guard.cpp:
-// the kind, the stage, "crash: <name> pc=<module>+0x.. addr=0x..".
 #include "app/crash_guard.h"
 
 #include "platform/platform.h"
 #include "util/log.h"
 
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
 #include <windows.h>
 
 #include <atomic>
-#include <cstdint>
+#include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <exception>
@@ -22,10 +24,10 @@ namespace xc::app::crash {
 
 namespace {
 
-char g_marker[1024] = {};
+char g_marker[512] = {};
 char g_stage[96] = "starting";
 std::atomic<uint64_t> g_beat{0};
-std::atomic<bool> g_written{false};
+LPTOP_LEVEL_EXCEPTION_FILTER g_prevFilter = nullptr;
 
 void appendStr(char* buf, size_t cap, size_t& len, const char* s) {
     if (!s) return;
@@ -46,56 +48,14 @@ void appendHex(char* buf, size_t cap, size_t& len, uintptr_t val) {
     buf[len] = 0;
 }
 
-const char* baseName(const char* path) {
-    const char* last = path;
-    for (const char* p = path; *p; ++p)
-        if (*p == '/' || *p == '\\') last = p + 1;
-    return last;
-}
-
-// "psbox.exe+0x1a2b3c" for an address inside a loaded module, else the address.
-void appendCodeAddr(char* buf, size_t cap, size_t& len, uintptr_t addr) {
-    HMODULE mod = nullptr;
-    if (addr != 0 && GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
-                                        reinterpret_cast<LPCSTR>(addr), &mod) &&
-        mod) {
-        char name[MAX_PATH];
-        DWORD n = GetModuleFileNameA(mod, name, sizeof name);
-        if (n > 0 && n < sizeof name) {
-            appendStr(buf, cap, len, baseName(name));
-            appendStr(buf, cap, len, "+");
-            appendHex(buf, cap, len, addr - reinterpret_cast<uintptr_t>(mod));
-            return;
-        }
-    }
-    appendHex(buf, cap, len, addr);
-}
-
-const char* exceptionName(DWORD code) {
-    switch (code) {
-    case EXCEPTION_ACCESS_VIOLATION: return "ACCESS_VIOLATION";
-    case EXCEPTION_IN_PAGE_ERROR: return "IN_PAGE_ERROR";
-    case EXCEPTION_STACK_OVERFLOW: return "STACK_OVERFLOW";
-    case EXCEPTION_ILLEGAL_INSTRUCTION: return "ILLEGAL_INSTRUCTION";
-    case EXCEPTION_PRIV_INSTRUCTION: return "PRIV_INSTRUCTION";
-    case EXCEPTION_INT_DIVIDE_BY_ZERO: return "INT_DIVIDE_BY_ZERO";
-    case EXCEPTION_FLT_DIVIDE_BY_ZERO: return "FLT_DIVIDE_BY_ZERO";
-    case EXCEPTION_ARRAY_BOUNDS_EXCEEDED: return "ARRAY_BOUNDS_EXCEEDED";
-    case EXCEPTION_DATATYPE_MISALIGNMENT: return "DATATYPE_MISALIGNMENT";
-    case 0xC0000409: return "STACK_BUFFER_OVERRUN";  // also abort() / fast fail
-    case 0xC0000374: return "HEAP_CORRUPTION";
-    default: return "EXCEPTION";
-    }
-}
-
-// No allocation: CreateFile / WriteFile only.
 void writeMarker(const char* kind, const char* crashLine = nullptr) {
     if (!g_marker[0]) return;
-    HANDLE h = CreateFileA(g_marker, GENERIC_WRITE, FILE_SHARE_READ, nullptr, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
-    if (h == INVALID_HANDLE_VALUE) return;
-    auto put = [h](const char* s) {
-        DWORD done = 0;
-        WriteFile(h, s, static_cast<DWORD>(std::strlen(s)), &done, nullptr);
+    HANDLE hFile = CreateFileA(g_marker, GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (hFile == INVALID_HANDLE_VALUE) return;
+    auto put = [hFile](const char* s) {
+        if (!s) return;
+        DWORD written = 0;
+        WriteFile(hFile, s, static_cast<DWORD>(std::strlen(s)), &written, nullptr);
     };
     put(kind);
     put("\n");
@@ -105,53 +65,67 @@ void writeMarker(const char* kind, const char* crashLine = nullptr) {
         put(crashLine);
         put("\n");
     }
-    CloseHandle(h);
+    CloseHandle(hFile);
 }
 
-LONG WINAPI onException(EXCEPTION_POINTERS* ep) {
-    if (g_written.exchange(true)) return EXCEPTION_CONTINUE_SEARCH;
-    DWORD code = ep && ep->ExceptionRecord ? ep->ExceptionRecord->ExceptionCode : 0;
-    uintptr_t pc = ep && ep->ExceptionRecord ? reinterpret_cast<uintptr_t>(ep->ExceptionRecord->ExceptionAddress) : 0;
-    uintptr_t fault = 0;
-    if (ep && ep->ExceptionRecord &&
-        (code == EXCEPTION_ACCESS_VIOLATION || code == EXCEPTION_IN_PAGE_ERROR) &&
-        ep->ExceptionRecord->NumberParameters >= 2) {
-        fault = static_cast<uintptr_t>(ep->ExceptionRecord->ExceptionInformation[1]);
+const char* exceptionName(DWORD code) {
+    switch (code) {
+    case EXCEPTION_ACCESS_VIOLATION: return "EXCEPTION_ACCESS_VIOLATION";
+    case EXCEPTION_ILLEGAL_INSTRUCTION: return "EXCEPTION_ILLEGAL_INSTRUCTION";
+    case EXCEPTION_INT_DIVIDE_BY_ZERO: return "EXCEPTION_INT_DIVIDE_BY_ZERO";
+    case EXCEPTION_STACK_OVERFLOW: return "EXCEPTION_STACK_OVERFLOW";
+    default: return "EXCEPTION";
+    }
+}
+
+LONG WINAPI topLevelFilter(EXCEPTION_POINTERS* ep) {
+    if (!ep || !ep->ExceptionRecord) return EXCEPTION_CONTINUE_SEARCH;
+    DWORD code = ep->ExceptionRecord->ExceptionCode;
+
+    // Ignore non-fatal / debug exceptions
+    if (code == 0xE06D7363 /* C++ exception */ || code == DBG_PRINTEXCEPTION_C) {
+        return EXCEPTION_CONTINUE_SEARCH;
     }
 
     char kind[64];
     size_t klen = 0;
-    appendStr(kind, sizeof kind, klen, "exception ");
-    appendHex(kind, sizeof kind, klen, code);
-    appendStr(kind, sizeof kind, klen, " (");
+    appendStr(kind, sizeof kind, klen, "signal 11 (");
     appendStr(kind, sizeof kind, klen, exceptionName(code));
     appendStr(kind, sizeof kind, klen, ")");
 
-    char line[512];
-    size_t len = 0;
-    appendStr(line, sizeof line, len, "crash: ");
-    appendStr(line, sizeof line, len, exceptionName(code));
-    appendStr(line, sizeof line, len, " pc=");
-    appendCodeAddr(line, sizeof line, len, pc);
-    appendStr(line, sizeof line, len, " addr=");
-    appendHex(line, sizeof line, len, fault);
-
-    // The callers, from the stack the exception left (not after a stack
-    // overflow: there is no room to walk it).
-    if (code != EXCEPTION_STACK_OVERFLOW) {
-        void* frames[8];
-        USHORT n = CaptureStackBackTrace(0, 8, frames, nullptr);
-        bool any = false;
-        for (USHORT i = 0; i < n; ++i) {
-            uintptr_t ret = reinterpret_cast<uintptr_t>(frames[i]);
-            if (!ret) break;
-            appendStr(line, sizeof line, len, any ? "," : " bt=");
-            appendCodeAddr(line, sizeof line, len, ret - 1);
-            any = true;
-        }
+    uintptr_t pc = 0;
+    uintptr_t faultAddr = 0;
+    if (ep->ContextRecord) {
+#if defined(_M_X64) || defined(__x86_64__)
+        pc = ep->ContextRecord->Rip;
+#elif defined(_M_IX86) || defined(__i386__)
+        pc = ep->ContextRecord->Eip;
+#endif
     }
-    writeMarker(kind, line);
-    return EXCEPTION_CONTINUE_SEARCH;  // Windows ends the process as it would have
+    if (code == EXCEPTION_ACCESS_VIOLATION && ep->ExceptionRecord->NumberParameters >= 2) {
+        faultAddr = ep->ExceptionRecord->ExceptionInformation[1];
+    }
+
+    HMODULE hMod = GetModuleHandleA(nullptr);
+    uintptr_t base = reinterpret_cast<uintptr_t>(hMod);
+
+    char crashLine[192];
+    size_t clen = 0;
+    appendStr(crashLine, sizeof crashLine, clen, "crash: ");
+    appendStr(crashLine, sizeof crashLine, clen, exceptionName(code));
+    appendStr(crashLine, sizeof crashLine, clen, " pc=psbox+");
+    if (pc >= base) {
+        appendHex(crashLine, sizeof crashLine, clen, pc - base);
+    } else {
+        appendHex(crashLine, sizeof crashLine, clen, pc);
+    }
+    appendStr(crashLine, sizeof crashLine, clen, " addr=");
+    appendHex(crashLine, sizeof crashLine, clen, faultAddr);
+
+    writeMarker(kind, crashLine);
+
+    if (g_prevFilter) return g_prevFilter(ep);
+    return EXCEPTION_CONTINUE_SEARCH;
 }
 
 }  // namespace
@@ -159,32 +133,29 @@ LONG WINAPI onException(EXCEPTION_POINTERS* ep) {
 void install(const std::string& markerPath) {
     std::strncpy(g_marker, markerPath.c_str(), sizeof g_marker - 1);
     g_marker[sizeof g_marker - 1] = 0;
-    SetUnhandledExceptionFilter(onException);
-    // No "the program stopped working" box hiding a crash from an unattended run.
-    SetErrorMode(SEM_FAILCRITICALERRORS | SEM_NOGPFAULTERRORBOX);
+
+    g_prevFilter = SetUnhandledExceptionFilter(topLevelFilter);
+
     std::set_terminate([] {
-        char line[256];
-        size_t len = 0;
-        appendStr(line, sizeof line, len, "crash: terminate pc=");
-        appendCodeAddr(line, sizeof line, len, reinterpret_cast<uintptr_t>(__builtin_return_address(0)));
-        appendStr(line, sizeof line, len, " addr=0x0");
+        char crashLine[160];
+        size_t clen = 0;
+        appendStr(crashLine, sizeof crashLine, clen, "crash: terminate pc=psbox+0x0 addr=0x0");
         if (auto ep = std::current_exception()) {
             try {
                 std::rethrow_exception(ep);
             } catch (const std::exception& e) {
-                appendStr(line, sizeof line, len, " what=");
-                appendStr(line, sizeof line, len, e.what());
+                appendStr(crashLine, sizeof crashLine, clen, " what=");
+                appendStr(crashLine, sizeof crashLine, clen, e.what());
             } catch (...) {
-                appendStr(line, sizeof line, len, " what=<non-std>");
+                appendStr(crashLine, sizeof crashLine, clen, " what=<non-std>");
             }
         }
-        if (!g_written.exchange(true)) writeMarker("uncaught exception", line);
-        TerminateProcess(GetCurrentProcess(), 3);
+        writeMarker("uncaught exception", crashLine);
+        std::abort();
     });
 }
 
 void setStage(const char* stage) {
-    // Written before a crash can read it half-copied: the end first.
     char tmp[sizeof g_stage];
     std::strncpy(tmp, stage, sizeof tmp - 1);
     tmp[sizeof tmp - 1] = 0;
@@ -201,9 +172,8 @@ void startWatchdog(uint32_t stallMs) {
         for (;;) {
             platform::sleepMs(1000);
             uint64_t now = platform::nowMs();
-            // This second took far longer: the PC slept, not the main loop stuck.
             if (now - last > 5000) {
-                XC_LOGI("crash guard: the app was suspended for %llu ms",
+                XC_LOGI("crash guard: the app was suspended for %llu ms (rest mode)",
                         static_cast<unsigned long long>(now - last));
                 heartbeat();
                 last = now;
@@ -214,8 +184,7 @@ void startWatchdog(uint32_t stallMs) {
             uint64_t idle = now > beat ? now - beat : 0;
             if (!stalled && idle > stallMs) {
                 stalled = true;
-                XC_LOGW("crash guard: the main loop has not run for %llu ms (%s)",
-                        static_cast<unsigned long long>(idle), g_stage);
+                XC_LOGW("crash guard: the main loop has not run for %llu ms (%s)", static_cast<unsigned long long>(idle), g_stage);
                 writeMarker("stalled");
             } else if (stalled && idle < 1000) {
                 stalled = false;

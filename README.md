@@ -111,20 +111,6 @@ build-host/psbox                            # the app (F11: fullscreen)
 tools/desktop/package-appimage.sh build-host   # -> the .AppImage
 ```
 
-**Windows** (cross-built on Linux with [llvm-mingw](https://github.com/mstorsjo/llvm-mingw)
-on the `PATH`, SDL3's `SDL3-devel-*-mingw` package and a
-[Vulkan-Headers](https://github.com/KhronosGroup/Vulkan-Headers) checkout):
-
-```bash
-cmake -S . -B build-win -G Ninja -DCMAKE_BUILD_TYPE=RelWithDebInfo \
-      -DCMAKE_TOOLCHAIN_FILE=cmake/windows-mingw.toolchain.cmake \
-      -DCMAKE_PREFIX_PATH=/path/to/SDL3-x.y.z/x86_64-w64-mingw32 \
-      -DXC_VULKAN_HEADERS=/path/to/Vulkan-Headers/include -DXCLOUD_DESKTOP_APP=ON
-ninja -C build-win psbox
-tools/desktop/package-windows.sh build-win  # -> build-win/pkg/PSBox-*-windows-x86_64.zip
-wine build-win/psbox.exe --selftest out     # optional: the self-test under Wine
-```
-
 **PS5** (uses the [PS5_Vulkan](https://github.com/mihawk-99/PS5_Vulkan)
 toolchain, built at `../PS5_Vulkan` or pointed to by `PS5_VULKAN`):
 

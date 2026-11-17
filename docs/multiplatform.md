@@ -142,15 +142,9 @@ shared code:
   closes the backends, the worker leaves its loop (a quit command), the
   stream and the price loop stop and the xCloud session is closed, so no
   thread draws, rumbles or plays into a closed backend.
-- **M2, Windows** (done): cross build with llvm-mingw and the SDL3 mingw package
-  (`cmake/windows-mingw.toolchain.cmake`, `tools/build-ffmpeg.sh windows`,
-  `tools/desktop/package-windows.sh`), the app's self-test under wine; the
-  socket calls that differ behind `net/sock.h` (Winsock), with the POSIX
-  header names answered by `src/platform/windows/compat`; `platform_windows.cpp`
-  (data in `%LOCALAPPDATA%\psbox`, atomic writes with `MoveFileEx`, 1 ms
-  timers); a crash guard on SEH (`crash_guard_windows.cpp`); Direct3D 11
-  hardware H.264 through FFmpeg; the icon and a manifest (UTF-8 paths,
-  per-monitor DPI). Left: `xcloud-tests` (its fork() and /tmp tests).
+- **M2, Windows**: cross build with llvm-mingw and the SDL3 mingw package,
+  tests under wine; a Winsock socket layer; atomic writes with
+  `MoveFileExW`; a crash guard on SEH (splitting `crash_guard.cpp`).
 - **M3, Linux** (done, below): the `linux-app` CI job (SDL3 built from its
   release, the app's self-test), the Linux AppImage and its optional signed
   release assets, the notices of what the desktop package carries. The

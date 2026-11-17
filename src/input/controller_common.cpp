@@ -146,8 +146,16 @@ void applyRumble(int index, Pad& pad) {
     if (pad.motors.due(v)) {
         uint8_t large = static_cast<uint8_t>(v >> 8);
         uint8_t small = static_cast<uint8_t>(v);
+#if defined(__ANDROID__)
+        if (index == 0) {
+            backend::setMotors(index, large, small, v ? pad.motors.remainingMs() : 0);
+        } else if (backend::padOpen(index)) {
+            backend::setMotors(index, large, small, v ? pad.motors.remainingMs() : 0);
+        }
+#else
         if (backend::padOpen(index))
             backend::setMotors(index, large, small, v ? pad.motors.remainingMs() : 0);
+#endif
         setUsbPadRumble(index, large, small);
     }
     TriggerStyle style = backend::triggerStyle(index);
@@ -185,9 +193,10 @@ void applyRumble(int index, Pad& pad) {
 
 bool inUse(const ControllerState& s) {
     return s.btnA || s.btnB || s.btnX || s.btnY || s.dpadUp || s.dpadDown || s.dpadLeft || s.dpadRight || s.btnL1 ||
-           s.btnR1 || s.btnL3 || s.btnR3 || s.btnOptions || s.btnTouchpad || s.triggerL2 > 0.5f || s.triggerR2 > 0.5f ||
-           std::abs(s.leftStickX) > 0.5f || std::abs(s.leftStickY) > 0.5f || std::abs(s.rightStickX) > 0.5f ||
-           std::abs(s.rightStickY) > 0.5f;
+           s.btnR1 || s.btnL3 || s.btnR3 || s.btnOptions || s.btnTouchpad || s.btnNexus ||
+           s.triggerL2 > 0.15f || s.triggerR2 > 0.15f ||
+           std::abs(s.leftStickX) > 0.15f || std::abs(s.leftStickY) > 0.15f ||
+           std::abs(s.rightStickX) > 0.15f || std::abs(s.rightStickY) > 0.15f;
 }
 
 void slotOpened(int slot) {
@@ -214,7 +223,30 @@ void slotClosed(int slot) {
     pad.connected = false;
 }
 
+void notePadActivity(int slot) {
+    if (slot >= 0 && slot < kMaxPads) {
+        g_pads[slot].connected = true;
+        g_pads[slot].activeAt = platform::nowMs();
+    }
+}
+
+static std::atomic<bool> g_vibrationEnabled{true};
+
+void setVibrationEnabled(bool on) {
+    g_vibrationEnabled.store(on, std::memory_order_relaxed);
+    if (!on) {
+        for (int i = 0; i < kMaxPads; ++i) {
+            g_pads[i].motors.set(0, 0, 0);
+        }
+    }
+}
+
+bool vibrationEnabled() {
+    return g_vibrationEnabled.load(std::memory_order_relaxed);
+}
+
 void setRumble(uint8_t large, uint8_t small, uint32_t durationMs, int pad) {
+    if (!g_vibrationEnabled.load(std::memory_order_relaxed)) return;
     if (pad >= 0 && pad < kMaxPads) g_pads[pad].motors.set(large, small, durationMs);
 }
 
@@ -250,6 +282,13 @@ void resetLightBar(int pad) {
 }
 
 bool padConnected(int index) { return index >= 0 && index < kMaxPads && g_pads[index].connected; }
+
+bool hasGamepad() {
+    for (int i = 0; i < kMaxPads; ++i) {
+        if (g_pads[i].connected || !usbPadNameFor(i).empty()) return true;
+    }
+    return false;
+}
 
 void setTriggerFeel(int strength, int hzIndex, int resistance, bool pulses, int profile) {
     g_triggerStrength = std::clamp(strength, 0, kTriggerStrengths - 1);
@@ -290,6 +329,54 @@ void applyPadSettings(ControllerState& s) {
     s.rightStickY = s.rawRightY;
     radialDeadzone(s.leftStickX, s.leftStickY, g_deadzone[0].load(std::memory_order_relaxed));
     radialDeadzone(s.rightStickX, s.rightStickY, g_deadzone[1].load(std::memory_order_relaxed));
+
+    if (!g_pads[0].connected && g_gyroActive) {
+        RawPad pad;
+        if (backend::readDeviceMotion(pad)) {
+            Pad& slot = g_pads[0];
+            int gyroMode = g_gyroMode.load(std::memory_order_relaxed);
+            bool gyroAimingTrigger = (gyroMode == kGyroAiming && s.triggerL2 > 0.3f);
+            bool gyroAlwaysAiming = (gyroMode == kGyroAlways);
+            bool gyroSteeringTrigger = (gyroMode == kGyroSteeringDrive && s.triggerR2 > 0.15f);
+            bool gyroAlwaysSteering = (gyroMode == kGyroSteering);
+            bool isSteeringMode = (gyroMode == kGyroSteering || gyroMode == kGyroSteeringDrive);
+            bool gyroOn = (gyroAlwaysAiming || gyroAimingTrigger || gyroAlwaysSteering || gyroSteeringTrigger);
+            if (gyroOn) {
+                float dt = pad.gyroDt;
+                if (dt <= 0.0f || !std::isfinite(dt)) {
+                    uint64_t nowUs = platform::nowUs();
+                    dt = (slot.lastGyroUs > 0 && nowUs > slot.lastGyroUs)
+                             ? std::clamp(static_cast<float>(nowUs - slot.lastGyroUs) / 1e6f, 0.001f, 0.050f)
+                             : 0.016667f;
+                    slot.lastGyroUs = nowUs;
+                }
+                if (isSteeringMode) {
+                    float steer = gyroToSteering(pad.gyro, pad.hasAccel ? pad.accel : nullptr,
+                                                 g_gyroLevel.load(std::memory_order_relaxed),
+                                                 slot.gyro,
+                                                 pad.hasOrientation ? pad.orientation : nullptr, dt);
+                    s.leftStickX = std::clamp(s.leftStickX + steer, -1.0f, 1.0f);
+                } else {
+                    if (!slot.gyro.aimingActive) {
+                        anchorGyroPosture(slot.gyro, pad.hasOrientation ? pad.orientation : nullptr,
+                                          pad.hasAccel ? pad.accel : nullptr);
+                    } else if (std::hypot(s.rightStickX, s.rightStickY) > 0.10f) {
+                        rebaseGyroPosture(slot.gyro, pad.hasOrientation ? pad.orientation : nullptr);
+                    }
+                    float gx, gy;
+                    gyroToStick(pad.gyro, pad.hasAccel ? pad.accel : nullptr, g_gyroLevel.load(std::memory_order_relaxed),
+                                slot.gyro, gx, gy, pad.hasOrientation ? pad.orientation : nullptr, dt);
+                    float x = s.rightStickX + gx, y = s.rightStickY + gy, m = std::hypot(x, y);
+                    if (m > 1.0f) x /= m, y /= m;
+                    s.rightStickX = x;
+                    s.rightStickY = y;
+                }
+            } else {
+                slot.lastGyroUs = 0;
+                resetGyroPosture(slot.gyro);
+            }
+        }
+    }
 }
 
 bool pollPad(int index, ControllerState& out) {
@@ -333,6 +420,7 @@ bool pollPad(int index, ControllerState& out) {
 
     out.triggerL2 = pad.l2;
     out.triggerR2 = pad.r2;
+    const bool physicalButtonsOrSticksUsed = inUse(out);
 
     // Gyro aiming & steering: in a game (menu closed), always or conditionally.
     int gyroMode = g_gyroMode.load(std::memory_order_relaxed);
@@ -421,7 +509,7 @@ bool pollPad(int index, ControllerState& out) {
         out.touchX = pad.touchX;
         out.touchY = pad.touchY;
     }
-    if (inUse(out)) slot.activeAt = platform::nowMs();
+    if (physicalButtonsOrSticksUsed) slot.activeAt = platform::nowMs();
 
     return true;
 }

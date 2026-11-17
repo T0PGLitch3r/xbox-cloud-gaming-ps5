@@ -1296,7 +1296,16 @@ void AppUi::handleGameSettings(const NavInput& in, UiEvent& ev) {
 void AppUi::drawSettings(Canvas& c) {
     drawBackground(c);
     drawTopBar(c);
-    fonts_.bold.draw(c, tr(Str::Settings), kMargin, 116, 46, kWhite);
+
+    // Back button next to Settings title for touch navigation
+    Rect backBtn{kMargin, 94, 52, 52};
+    c.fillRect(backBtn, rgba(255, 255, 255, 22), 16);
+    c.strokeRect(backBtn, rgba(255, 255, 255, 50), 1, 16);
+    float bx = backBtn.x + backBtn.w / 2.0f, by = backBtn.y + backBtn.h / 2.0f;
+    c.line(bx + 4.0f, by - 9.0f, bx - 4.0f, by, 3.0f, kWhite);
+    c.line(bx - 4.0f, by, bx + 4.0f, by + 9.0f, 3.0f, kWhite);
+
+    fonts_.bold.draw(c, tr(Str::Settings), kMargin + 72, 116, 46, kWhite);
     if (loading_) {
         drawLoadingBar(c, kW - kMargin - 480, 100, 480, lastRender_);
     }
@@ -1311,9 +1320,11 @@ void AppUi::drawSettings(Canvas& c) {
                                         tr(Str::ResetSettings), tr(Str::SyncTrophies),  tr(Str::RemoveTrophies),
                                         tr(Str::FpsLimit), tr(Str::StoreCountry),
                                         tr(Str::AccentColour),  tr(Str::Background),    tr(Str::GameArtBehind)};
-    constexpr int kRowW = 1140, kRowH = 30, kGap = 1, kGroupGap = 4, kRowPx = 22;
+    constexpr int kRowW = kSettingsRowW, kRowH = kSettingsRowH, kGap = kSettingsGap, kGroupGap = kSettingsGroupGap, kRowPx = kSettingsRowPx;
+    constexpr int kListTop = kSettingsListTop, kClipTop = kSettingsClipTop;
     Rect rows[kSettingRows];  // by row id
-    int y = 184;
+    int y = kListTop - static_cast<int>(std::lround(settingsScrollY_));
+    c.setClip({kMargin - 8, kClipTop, kRowW + 16, kH - kClipTop - 80});
     for (const auto& [i, groupStart] : visibleSettingsRows(caps_)) {  // what caps_ rules out is hidden
         if (groupStart) y += kGroupGap;
         Rect r{kMargin, y, kRowW, kRowH};
@@ -1418,6 +1429,7 @@ void AppUi::drawSettings(Canvas& c) {
         }
         y += kRowH + kGap;
     }
+    c.resetClip();
     static constexpr Str kSettingDescs[kSettingRows] = {
         Str::SettingDescLanguage,
         Str::SettingDescResolution,
@@ -1736,6 +1748,7 @@ void AppUi::drawPadTester(Canvas& c) {
         int tabY = panel.y + 44;
 
         auto shoulder = [&](const char* name, int cx) {
+            if (!input::hasGamepad() && !g_keyboardHints) return;
             Rect r{cx - 20, tabY + 5, 40, 28};
             c.fillRect(r, rgba(255, 255, 255, 40), 8);
             fonts_.bold.draw(c, name, cx - fonts_.bold.measure(name, 16) / 2, fonts_.bold.centeredY(r.y, r.h, 16), 16, kGray);

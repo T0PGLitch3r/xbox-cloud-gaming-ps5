@@ -22,6 +22,10 @@
 #include <string>
 #include <vector>
 
+namespace xc::app::shell {
+struct TouchEvent;
+}
+
 namespace xc::ui {
 
 // The stream's numbers over the last second.
@@ -58,7 +62,9 @@ enum class MenuAction {
     None, Close, Leave, Resolution, Stats, Sharpness, Deband, Upscaler, XboxButton,
     ProfileToggle, Triggers, Deadzone, ConfirmButton, MicToggle, Gyro, GyroCalibrate, PadSpeakerVolume,
     TouchpadShortcuts, Player, AudioHaptics, ReloadStream, GuitarStrum, GuitarTilt, GuitarBinding,
-    VideoDecoder, FpsLimiter, BitrateLimiter, VrrToggle
+    VideoDecoder, FpsLimiter, BitrateLimiter, VrrToggle,
+    TouchOverlayToggle, TouchInvertSticksToggle, TouchLayoutStudio,
+    VibrationToggle, TouchOpacity
 };
 
 enum class MenuTab {
@@ -70,10 +76,17 @@ enum class MenuTab {
 
 class StreamMenu {
 public:
+#if defined(__ANDROID__)
+    static constexpr int kMenuW = 720, kMenuH = 1064;
+    static constexpr int kCardW = 540, kCardGap = 40;
+    static constexpr int kCombinedW = kMenuW + kCardGap + kCardW;
+    static constexpr int kMenuX = 40, kMenuY = (1080 - kMenuH) / 2;
+#else
     static constexpr int kMenuW = 620, kMenuH = 1064;
     static constexpr int kCardW = 540, kCardGap = 40;
     static constexpr int kCombinedW = kMenuW + kCardGap + kCardW;
     static constexpr int kMenuX = 80, kMenuY = (1080 - kMenuH) / 2;
+#endif
     static constexpr Color kPanel = rgba(24, 24, 24);
     static constexpr int kStatsX = 32, kStatsY = 28;
     // The connection warning, alone (the statistics line off), top right.
@@ -90,9 +103,11 @@ public:
     void open(int resolution, bool stats, int sharpness = 0, int deband = 1, int upscaler = 0, bool homeConsole = false,
               bool allow1440 = true, bool hasCustomProfile = false, int triggerStrength = 2, int deadzone = 15,
               bool circleConfirms = false, float micLevel = 0.0f, bool micMuted = false, int padSpeakerVolume = 100);
-    void close() { open_ = false; statsCustomizing_ = false; touchpadCustomizing_ = false; gyroDialog_.close(); stickDialog_.close(); triggerDialog_.close(); }
+    void close() { open_ = false; statsCustomizing_ = false; touchpadCustomizing_ = false; gyroDialog_.close(); stickDialog_.close(); triggerDialog_.close(); touchActive_ = false; touchDragging_ = false; }
     bool isOpen() const { return open_; }
     MenuAction handle(const NavInput& in);
+    bool onTouch(const app::shell::TouchEvent& ev, NavInput& outNav);
+    bool onTouch(float screenX, float screenY, NavInput& outNav);
 
     MenuTab tab() const { return activeTab_; }
     void setTab(MenuTab t) { activeTab_ = t; selectFirstItem(); }
@@ -151,6 +166,14 @@ public:
     static std::string formatBitrateLabel(int mbps);
     bool highRefresh() const { return highRefresh_; }
     void setHighRefresh(bool h) { highRefresh_ = h; }
+    bool touchOverlayEnabled() const { return touchOverlayEnabled_; }
+    void setTouchOverlayEnabled(bool e) { touchOverlayEnabled_ = e; }
+    bool touchInvertSticks() const { return touchInvertSticks_; }
+    void setTouchInvertSticks(bool inv) { touchInvertSticks_ = inv; }
+    bool vibrationEnabled() const { return vibrationEnabled_; }
+    void setVibrationEnabled(bool v) { vibrationEnabled_ = v; }
+    int touchOpacity() const { return touchOpacity_; }
+    void setTouchOpacity(int op) { touchOpacity_ = op; }
 
     // Gyro aiming: mode (input::GyroMode) and intensity 1..input::kGyroLevels.
     int gyroMode() const { return gyroMode_; }
@@ -262,6 +285,12 @@ public:
     enum Item {
         // Tab General
         XboxButton = 0,
+        TouchOverlayItem,
+        TouchOpacityItem,
+        TouchInvertSticksItem,
+        TouchLayoutStudioItem,
+        VibrationItem,
+        MicMuteItem,
         Stats,
         Upscaler,
         Sharpness,
@@ -272,7 +301,6 @@ public:
         BitrateLimiterItem,
         VrrItem,
         ReloadStreamItem,
-        Leave,
 
         // Tab Controls
         PlayerItem,
@@ -294,15 +322,17 @@ public:
         AudioHapticsItem,
         PadSpeakerVolumeItem,
 
+        Leave,
+
         ItemCount,
         Profile = ItemCount
     };
 
     const char* itemDescription(int item) const;
-
-private:
     bool itemInTab(int item, MenuTab tab) const;
     bool itemShown(int item) const;
+
+private:
     void selectFirstItem();
 
     const Fonts& fonts_;
@@ -347,6 +377,18 @@ private:
     bool micMuted_ = false;
     float micLevel_ = 0.0f;
     int padSpeakerVolume_ = 100;
+    bool touchOverlayEnabled_ = true;
+    bool touchInvertSticks_ = false;
+    bool vibrationEnabled_ = true;
+    int touchOpacity_ = 80;
+    // Touch gesture state
+    bool touchActive_ = false;
+    uint64_t touchFingerId_ = 0;
+    float touchStartX_ = 0.0f;
+    float touchStartY_ = 0.0f;
+    float touchLastY_ = 0.0f;
+    bool touchDragging_ = false;
+    mutable float scrollPixelOffset_ = 0.0f;
     PadSlots pads_{};
     int usbOwnerPlayer_ = -1;
     bool usbOwnerGuitar_ = false, guitarStrum_ = false, guitarTilt_ = true;
@@ -359,6 +401,26 @@ private:
     // The guitar's tab: its rows in order (navigation and drawing), and the drawing.
     static constexpr int kGuitarOrder[] = {XboxButton, PlayerItem, StrumItem, TiltItem, GuitarLane0, GuitarLane1,
                                            GuitarLane2, GuitarLane3, GuitarLane4, GuitarOverdrive, GuitarReset, Leave};
+    // The Android unified menu: its rows in the exact user-requested order.
+    static constexpr int kAndroidOrder[] = {
+        XboxButton,
+        Stats,
+        TouchOverlayItem,
+        TouchOpacityItem,
+        TouchLayoutStudioItem,
+        GyroItem,
+        VibrationItem,
+        DeadzoneItem,
+        TouchInvertSticksItem,
+        MicMuteItem,
+        Resolution,
+        FpsLimiterItem,
+        BitrateLimiterItem,
+        Sharpness,
+        Deband,
+        ReloadStreamItem,
+        Leave
+    };
     void drawGuitarTab(Canvas& c) const;
     void drawGuitarPicker(Canvas& c, int rowY) const;
     int audioHaptics_ = 0;

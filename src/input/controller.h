@@ -69,6 +69,8 @@ void refreshPads();
 // Whether the pad at `index` answered its last poll, and its user's name
 // (empty when the slot is free).
 bool padConnected(int index);
+// True if any pad slot has a physical gamepad or USB controller connected.
+bool hasGamepad();
 // When pad `index` was last used (a button or a stick pushed), ms; 0 never.
 uint64_t padActiveAt(int index);
 // A button pressed or a stick / trigger pushed past halfway.
@@ -81,6 +83,8 @@ std::string padDeviceName(int index);
 // Rumble, 0..255 per motor (large = low frequency, small = high frequency),
 // for `durationMs` (0 = until changed). Any thread; polling applies it.
 void setRumble(uint8_t large, uint8_t small, uint32_t durationMs, int pad = 0);
+void setVibrationEnabled(bool on);
+bool vibrationEnabled();
 // Sub-bass audio-to-haptics pulse (when no active game rumble is running)
 void setAudioHaptics(uint8_t kick, uint32_t durationMs = 60, int pad = 0);
 void setAudioHapticsEnabled(bool on);
@@ -139,5 +143,24 @@ void startGyroRecording(int seconds);
 bool gyroRecordingTake(std::vector<GyroSample>& out);
 // DualSense: suppresses vibration and trigger effect bleed while embedded mic is active
 void setEmbeddedMicActive(bool active, int pad = 0);
+
+enum class HapticType {
+    Click = 0,
+    Tick = 1,
+    HeavyClick = 2,
+};
+
+#if defined(__ANDROID__)
+void androidTriggerHaptic(int type);
+inline void triggerHaptic(HapticType type = HapticType::Click) {
+    if (!vibrationEnabled()) return;
+    androidTriggerHaptic(static_cast<int>(type));
+}
+#else
+inline void androidTriggerHaptic(int type) { (void)type; }
+inline void triggerHaptic(HapticType type = HapticType::Click) {
+    (void)type;
+}
+#endif
 
 } // namespace xc::input

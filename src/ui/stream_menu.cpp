@@ -3,6 +3,7 @@
 #include <cstdint>
 #include "ui/stream_menu.h"
 #include "input/pad_usb.h"
+#include "app/shell.h"
 
 #include "ui/cloud_time.h"
 #include "ui/strings.h"
@@ -37,9 +38,18 @@ bool StreamMenu::itemInTab(int item, MenuTab tab) const {
     if (tab == MenuTab::Guitar)
         return item == XboxButton || item == PlayerItem || item == StrumItem || item == TiltItem || item == Leave ||
                (item >= GuitarLane0 && item <= GuitarReset);
+    if (item >= GuitarLane0 && item <= GuitarReset) return false;
+#if defined(__ANDROID__)
+    (void)tab;
+    for (int it : kAndroidOrder) {
+        if (it == item) return true;
+    }
+    return false;
+#else
     if (tab == MenuTab::General) {
-        return item == XboxButton || item == Stats ||
-               item == Upscaler || item == Sharpness || item == Deband ||
+        return item == XboxButton || item == TouchOverlayItem || item == TouchInvertSticksItem ||
+               item == TouchLayoutStudioItem || item == MicMuteItem ||
+               item == Stats || item == Upscaler || item == Sharpness || item == Deband ||
                item == Resolution || item == VideoDecoderItem || item == FpsLimiterItem ||
                item == BitrateLimiterItem || item == VrrItem ||
                item == ReloadStreamItem || item == Leave;
@@ -48,12 +58,25 @@ bool StreamMenu::itemInTab(int item, MenuTab tab) const {
                item == DeadzoneItem || item == TouchpadShortcutsItem || item == GyroItem ||
                item == AudioHapticsItem || item == PadSpeakerVolumeItem;
     }
+#endif
 }
 
 bool StreamMenu::itemShown(int item) const {
     if (item == Profile) return false;
+    if (item >= GuitarLane0 && item <= GuitarReset) return activeTab_ == MenuTab::Guitar;
     if (!itemInTab(item, activeTab_)) return false;
     switch (item) {
+    case TouchOverlayItem:
+    case TouchOpacityItem:
+    case TouchInvertSticksItem:
+    case TouchLayoutStudioItem:
+    case VibrationItem:
+    case MicMuteItem:
+#if defined(__ANDROID__)
+        return true;
+#else
+        return false;
+#endif
     case VideoDecoderItem: return true;
     case FpsLimiterItem: return true;
     case BitrateLimiterItem: return true;
@@ -74,12 +97,21 @@ bool StreamMenu::itemShown(int item) const {
 }
 
 void StreamMenu::selectFirstItem() {
+#if defined(__ANDROID__)
+    for (int i : kAndroidOrder) {
+        if (itemShown(i)) {
+            selected_ = i;
+            return;
+        }
+    }
+#else
     for (int i = 0; i < ItemCount; ++i) {
         if (itemShown(i)) {
             selected_ = i;
             return;
         }
     }
+#endif
 }
 
 void StreamMenu::setCapabilities(const UiCaps& caps) {
@@ -281,6 +313,9 @@ MenuAction StreamMenu::handle(const NavInput& navIn) {
     }
 
     // Shoulder tabs switching (L1 / R1); a guitar's menu has one tab (its orange fret is LB).
+#if defined(__ANDROID__)
+    in.l1 = in.r1 = false;
+#else
     if (activeTab_ == MenuTab::Guitar) in.l1 = in.r1 = false;
     if (in.l1) {
         activeTab_ = (activeTab_ == MenuTab::Controls) ? MenuTab::General : MenuTab::Controls;
@@ -292,6 +327,7 @@ MenuAction StreamMenu::handle(const NavInput& navIn) {
         selectFirstItem();
         return MenuAction::None;
     }
+#endif
 
     // Up / down within active tab; the guitar's rows in the order they are drawn.
     if (activeTab_ == MenuTab::Guitar && (in.up || in.down)) {
@@ -303,8 +339,20 @@ MenuAction StreamMenu::handle(const NavInput& navIn) {
         selected_ = kGuitarOrder[pos];
         in.up = in.down = false;
     }
+#if defined(__ANDROID__)
+    if (in.up || in.down) {
+        constexpr int n = static_cast<int>(std::size(kAndroidOrder));
+        int pos = 0;
+        for (int k = 0; k < n; ++k)
+            if (kAndroidOrder[k] == selected_) pos = k;
+        do pos = (pos + (in.up ? n - 1 : 1)) % n; while (!itemShown(kAndroidOrder[pos]));
+        selected_ = kAndroidOrder[pos];
+        in.up = in.down = false;
+    }
+#else
     if (in.up) do selected_ = (selected_ + ItemCount - 1) % ItemCount; while (!itemShown(selected_));
     if (in.down) do selected_ = (selected_ + 1) % ItemCount; while (!itemShown(selected_));
+#endif
 
     if (selected_ == PlayerItem && (in.left || in.right || in.accept)) {
         usbOwnerPlayer_ = (usbOwnerPlayer_ + (in.left ? 3 : 1)) % 4;
@@ -344,6 +392,35 @@ MenuAction StreamMenu::handle(const NavInput& navIn) {
     if (selected_ == Profile && (in.left || in.right || in.accept)) {
         hasCustomProfile_ = !hasCustomProfile_;
         return MenuAction::ProfileToggle;
+    }
+    if (selected_ == TouchOverlayItem && (in.left || in.right || in.accept)) {
+        touchOverlayEnabled_ = !touchOverlayEnabled_;
+        return MenuAction::TouchOverlayToggle;
+    }
+    if (selected_ == TouchOpacityItem && (in.left || in.right || in.accept)) {
+        static constexpr int kOpacities[] = {20, 40, 60, 80, 100};
+        int idx = 3;
+        for (int k = 0; k < 5; ++k) {
+            if (kOpacities[k] == touchOpacity_) idx = k;
+        }
+        idx = in.left ? (idx + 4) % 5 : (idx + 1) % 5;
+        touchOpacity_ = kOpacities[idx];
+        return MenuAction::TouchOpacity;
+    }
+    if (selected_ == TouchInvertSticksItem && (in.left || in.right || in.accept)) {
+        touchInvertSticks_ = !touchInvertSticks_;
+        return MenuAction::TouchInvertSticksToggle;
+    }
+    if (selected_ == TouchLayoutStudioItem && in.accept) {
+        return MenuAction::TouchLayoutStudio;
+    }
+    if (selected_ == VibrationItem && (in.left || in.right || in.accept)) {
+        vibrationEnabled_ = !vibrationEnabled_;
+        return MenuAction::VibrationToggle;
+    }
+    if (selected_ == MicMuteItem && (in.left || in.right || in.accept)) {
+        micMuted_ = !micMuted_;
+        return MenuAction::MicToggle;
     }
     if (selected_ == Resolution && (in.left || in.right)) {
         int pos = 0;
@@ -594,6 +671,12 @@ void StreamMenu::drawGuitarPicker(Canvas& c, int rowY) const {
 const char* StreamMenu::itemDescription(int item) const {
     switch (item) {
         case XboxButton: return tr(Str::MenuDescXboxButton);
+        case TouchOverlayItem: return tr(Str::SettingDescTouchOverlay);
+        case TouchOpacityItem: return tr(Str::SettingDescTouchOpacity);
+        case TouchInvertSticksItem: return tr(Str::SettingDescTouchInvertSticks);
+        case TouchLayoutStudioItem: return tr(Str::SettingDescTouchLayoutStudio);
+        case VibrationItem: return tr(Str::SettingDescVibration);
+        case MicMuteItem: return tr(Str::MenuDescMicrophone);
         case Stats: return tr(Str::MenuDescStats);
         case Upscaler: return tr(Str::MenuDescUpscaler);
         case Sharpness: return tr(Str::MenuDescSharpness);
@@ -773,6 +856,7 @@ Canvas StreamMenu::renderMenu(const StreamInfo& info) const {
     }
 
     // Tabs Header: [L1]  Geral  |  Controles  [R1]; a guitar's menu: its one tab, no badges.
+#if !defined(__ANDROID__)
     int tabY = 66, tabH = 34;
     if (activeTab_ == MenuTab::Guitar) {
         const char* tabGuitar = tr(Str::MenuTabGuitar);
@@ -832,20 +916,37 @@ Canvas StreamMenu::renderMenu(const StreamInfo& info) const {
         // R1 badge
         drawBadge("R1", bx);
     }
+#endif
 
     // The Items List
+#if defined(__ANDROID__)
+    constexpr int kRowH = 50, kTop = 110, kPx = 23, kMaxVisible = 10;
+#else
     constexpr int kRowH = 38, kTop = 128, kPx = 18, kMaxVisible = 14;
+#endif
     int shownList[ItemCount];
     int totalShown = 0;
     int selIdx = 0;
+#if defined(__ANDROID__)
+    for (int i : kAndroidOrder) {
+        if (!itemShown(i)) continue;
+        if (i == selected_) selIdx = totalShown;
+        shownList[totalShown++] = i;
+    }
+#else
     for (int i = 0; i < ItemCount; ++i) {
         if (!itemShown(i)) continue;
         if (i == selected_) selIdx = totalShown;
         shownList[totalShown++] = i;
     }
+#endif
     int startIdx = 0;
     if (totalShown > kMaxVisible) {
+#if defined(__ANDROID__)
+        startIdx = std::clamp(static_cast<int>(scrollPixelOffset_ / kRowH), 0, totalShown - kMaxVisible);
+#else
         startIdx = std::clamp(selIdx - kMaxVisible / 2, 0, totalShown - kMaxVisible);
+#endif
     }
     int visibleCount = std::min(totalShown, kMaxVisible);
 
@@ -854,9 +955,13 @@ Canvas StreamMenu::renderMenu(const StreamInfo& info) const {
         constexpr int kStatsSepY = 704;
         constexpr int kLeaveMarginBottom = 18;
         const int kLeaveTargetY = kStatsSepY - kLeaveMarginBottom - (kRowH - 4); // 704 - 18 - 34 = 652
+#if defined(__ANDROID__)
+        int rowY = kTop + v * kRowH;
+#else
         int rowY = (activeTab_ != MenuTab::Controls && i == Leave)
             ? std::max(kTop + v * kRowH + 16, kLeaveTargetY)
             : (kTop + v * kRowH);
+#endif
         Rect row{kPad - 16, rowY, kMenuW - 2 * (kPad - 16), kRowH - 4};
         bool sel = i == selected_;
         if (sel) c.fillRect(row, kWhite, 8);
@@ -864,6 +969,12 @@ Canvas StreamMenu::renderMenu(const StreamInfo& info) const {
         int ty = fonts_.semibold.centeredY(row.y, row.h, kPx);
 
         const char* label = i == XboxButton            ? tr(Str::MenuXboxButton)
+                            : i == TouchOverlayItem      ? tr(Str::TouchOverlay)
+                            : i == TouchOpacityItem      ? tr(Str::TouchOpacity)
+                            : i == TouchInvertSticksItem ? tr(Str::TouchInvertSticks)
+                            : i == TouchLayoutStudioItem ? tr(Str::TouchLayoutStudio)
+                            : i == VibrationItem         ? tr(Str::Vibration)
+                            : i == MicMuteItem         ? tr(Str::MenuMicrophone)
                             : i == PlayerItem          ? tr(Str::MenuPlayer)
                             : i == StrumItem           ? tr(Str::MenuStrum)
                             : i == TiltItem            ? tr(Str::MenuTilt)
@@ -896,6 +1007,18 @@ Canvas StreamMenu::renderMenu(const StreamInfo& info) const {
         }
         if (i == StrumItem || i == TiltItem) {
             value = tr((i == StrumItem ? guitarStrum_ : guitarTilt_) ? Str::On : Str::Off);
+            if (sel) value = "< " + value + " >";
+        }
+        if (i == TouchOverlayItem) {
+            value = tr(touchOverlayEnabled_ ? Str::On : Str::Off);
+            if (sel) value = "< " + value + " >";
+        }
+        if (i == TouchInvertSticksItem) {
+            value = tr(touchInvertSticks_ ? Str::On : Str::Off);
+            if (sel) value = "< " + value + " >";
+        }
+        if (i == MicMuteItem) {
+            value = tr(micMuted_ ? Str::Off : Str::On);
             if (sel) value = "< " + value + " >";
         }
         if (i == Profile) {
@@ -944,6 +1067,14 @@ Canvas StreamMenu::renderMenu(const StreamInfo& info) const {
                                      : "FSR";
             if (sel) value = "< " + value + " >";
         }
+        if (i == TouchOpacityItem) {
+            value = std::to_string(touchOpacity_) + "%";
+            if (sel) value = "< " + value + " >";
+        }
+        if (i == VibrationItem) {
+            value = vibrationEnabled_ ? tr(Str::On) : tr(Str::Off);
+            if (sel) value = "< " + value + " >";
+        }
         if (i == ConfirmItem) {
             value = circleConfirms_ ? "○" : "×";
             if (sel) value = "< " + value + " >";
@@ -982,7 +1113,7 @@ Canvas StreamMenu::renderMenu(const StreamInfo& info) const {
         }
 
         const bool hasSubmenu = (i == Stats || i == Triggers || i == DeadzoneItem ||
-                                 i == TouchpadShortcutsItem || i == GyroItem);
+                                 i == TouchpadShortcutsItem || i == GyroItem || i == TouchLayoutStudioItem);
         int pillLeft = row.x + row.w - 14;
         if (hasSubmenu) {
             const int pillW = sel ? 46 : 26;
@@ -1128,7 +1259,7 @@ Canvas StreamMenu::renderMenu(const StreamInfo& info) const {
     }
 
     const bool subItem = (selected_ == Stats || selected_ == Triggers || selected_ == DeadzoneItem ||
-                          selected_ == TouchpadShortcutsItem || selected_ == GyroItem);
+                          selected_ == TouchpadShortcutsItem || selected_ == GyroItem || selected_ == TouchLayoutStudioItem);
     const char* confirmLabel = (selected_ == Stats) ? tr(Str::StatsCustomize)
                              : subItem              ? tr(Str::Adjust)
                                                     : tr(Str::Select);
@@ -1150,8 +1281,10 @@ Canvas StreamMenu::renderMenu(const StreamInfo& info) const {
         x = fonts_.semibold.draw(c, "QR Code", x + kw + 8, fonts_.semibold.centeredY(hy, 26, 18), 18, kGray) + 20;
         kw = cap("Esc");
         x = fonts_.semibold.draw(c, tr(Str::Back), x + kw + 8, fonts_.semibold.centeredY(hy, 26, 18), 18, kGray) + 20;
+#if !defined(__ANDROID__)
         kw = cap("Q/E");
         fonts_.semibold.draw(c, tr(Str::MenuTabLabel), x + kw + 8, fonts_.semibold.centeredY(hy, 26, 18), 18, kGray);
+#endif
         return c;
     }
 
@@ -1162,6 +1295,7 @@ Canvas StreamMenu::renderMenu(const StreamInfo& info) const {
     icon(circleConfirms_, x, hy);
     x = fonts_.semibold.draw(c, tr(Str::Back), x + 34, fonts_.semibold.centeredY(hy, 24, 18), 18, kGray) + 20;
 
+#if !defined(__ANDROID__)
     // L1 / R1 Tab Switch Hint (separated with clear spacing); a guitar's menu has one tab.
     if (activeTab_ == MenuTab::Guitar) return c;
     const char* tabBadge = "L1 / R1";
@@ -1169,6 +1303,7 @@ Canvas StreamMenu::renderMenu(const StreamInfo& info) const {
     c.fillRect({x, hy + 1, bw, 22}, rgba(255, 255, 255, 30), 4);
     fonts_.bold.draw(c, tabBadge, x + 10, fonts_.bold.centeredY(hy + 1, 22, 13), 13, kWhite);
     fonts_.semibold.draw(c, tr(Str::MenuTabsLabel), x + bw + 10, fonts_.semibold.centeredY(hy, 24, 18), 18, kGray);
+#endif
 
     return c;
 }
@@ -1274,6 +1409,193 @@ bool StreamMenu::feedGyroCalibration(const float rawW[3]) {
         return false;
     }
     return done;
+}
+
+bool StreamMenu::onTouch(const app::shell::TouchEvent& ev, NavInput& outNav) {
+    if (!open_) return false;
+
+    // Check sub-dialogs first
+    if (stickDialog_.isOpen() || triggerDialog_.isOpen() || gyroDialog_.isOpen()) {
+        if (ev.kind == app::shell::TouchEvent::Kind::Up) outNav.back = true;
+        return true;
+    }
+    if (pickOpen_) {
+        if (ev.kind == app::shell::TouchEvent::Kind::Up) pickOpen_ = false;
+        return true;
+    }
+
+    float mx = ev.x - kMenuX;
+    float my = ev.y - kMenuY;
+
+    if (ev.kind == app::shell::TouchEvent::Kind::Down) {
+        touchActive_ = true;
+        touchFingerId_ = ev.fingerId;
+        touchStartX_ = ev.x;
+        touchStartY_ = ev.y;
+        touchLastY_ = ev.y;
+        touchDragging_ = false;
+        return true;
+    }
+
+    if (!touchActive_ || touchFingerId_ != ev.fingerId) return false;
+
+    if (ev.kind == app::shell::TouchEvent::Kind::Motion) {
+        float totalDy = ev.y - touchStartY_;
+        if (!touchDragging_ && std::abs(totalDy) >= 15.0f) {
+            touchDragging_ = true;
+        }
+        if (touchDragging_) {
+            float dy = ev.y - touchLastY_;
+            touchLastY_ = ev.y;
+#if defined(__ANDROID__)
+            constexpr int kRowH = 50, kMaxVisible = 10;
+#else
+            constexpr int kRowH = 38, kMaxVisible = 14;
+#endif
+            int totalShown = 0;
+            for (int i = 0; i < ItemCount; ++i) if (itemShown(i)) totalShown++;
+            int maxScroll = std::max(0, (totalShown - kMaxVisible) * kRowH);
+            scrollPixelOffset_ = std::clamp(scrollPixelOffset_ - dy, 0.0f, static_cast<float>(maxScroll));
+            return true;
+        }
+        return false;
+    }
+
+    if (ev.kind == app::shell::TouchEvent::Kind::Up) {
+        touchActive_ = false;
+        if (touchDragging_) {
+            touchDragging_ = false;
+#if defined(__ANDROID__)
+            constexpr int kRowH = 50, kMaxVisible = 10;
+            int shownList[ItemCount];
+            int totalShown = 0;
+            int selIdx = 0;
+            for (int i : kAndroidOrder) {
+                if (!itemShown(i)) continue;
+                if (i == selected_) selIdx = totalShown;
+                shownList[totalShown++] = i;
+            }
+            if (totalShown > kMaxVisible) {
+                int startIdx = std::clamp(static_cast<int>(scrollPixelOffset_ / kRowH), 0, totalShown - kMaxVisible);
+                if (selIdx < startIdx) {
+                    selected_ = shownList[startIdx];
+                } else if (selIdx >= startIdx + kMaxVisible) {
+                    selected_ = shownList[startIdx + kMaxVisible - 1];
+                }
+            }
+#endif
+            return true;
+        }
+
+        // Tap detected!
+        // Tapping outside closes the menu
+        if (mx < 0 || mx > kMenuW || my < 0 || my > kMenuH) {
+            outNav.back = true;
+            return true;
+        }
+
+        if (statsCustomizing_) {
+            constexpr int kTop = 108, kRowH = 46;
+            if (my >= kTop && my < kTop + 8 * kRowH) {
+                int i = static_cast<int>((my - kTop) / kRowH);
+                statsCustomIndex_ = std::clamp(i, 0, 7);
+                outNav.accept = true;
+                return true;
+            }
+            return false;
+        }
+
+        if (touchpadCustomizing_) {
+            constexpr int kTop = 126, kRowH = 48;
+            if (my >= kTop && my < kTop + 7 * kRowH) {
+                int i = static_cast<int>((my - kTop) / kRowH);
+                touchpadCustomIndex_ = std::clamp(i, 0, 6);
+                outNav.accept = true;
+                return true;
+            }
+            return false;
+        }
+
+#if !defined(__ANDROID__)
+        // Tabs header (General / Controls)
+        if (my >= 56 && my <= 108 && activeTab_ != MenuTab::Guitar) {
+            if (mx < kMenuW / 2.0f) {
+                if (activeTab_ != MenuTab::General) {
+                    activeTab_ = MenuTab::General;
+                    selectFirstItem();
+                }
+            } else {
+                if (activeTab_ != MenuTab::Controls) {
+                    activeTab_ = MenuTab::Controls;
+                    selectFirstItem();
+                }
+            }
+            return true;
+        }
+#endif
+
+        // Items List tap
+#if defined(__ANDROID__)
+        constexpr int kRowH = 50, kTop = 110, kPx = 23, kMaxVisible = 10;
+#else
+        constexpr int kRowH = 38, kTop = 128, kPx = 18, kMaxVisible = 14;
+#endif
+        int shownList[ItemCount];
+        int totalShown = 0;
+        int selIdx = 0;
+#if defined(__ANDROID__)
+        for (int i : kAndroidOrder) {
+            if (!itemShown(i)) continue;
+            if (i == selected_) selIdx = totalShown;
+            shownList[totalShown++] = i;
+        }
+#else
+        for (int i = 0; i < ItemCount; ++i) {
+            if (!itemShown(i)) continue;
+            if (i == selected_) selIdx = totalShown;
+            shownList[totalShown++] = i;
+        }
+#endif
+        int startIdx = 0;
+        if (totalShown > kMaxVisible) {
+#if defined(__ANDROID__)
+            startIdx = std::clamp(static_cast<int>(scrollPixelOffset_ / kRowH), 0, totalShown - kMaxVisible);
+#else
+            startIdx = std::clamp(selIdx - kMaxVisible / 2, 0, totalShown - kMaxVisible);
+#endif
+        }
+        int visibleCount = std::min(totalShown, kMaxVisible);
+
+        for (int v = 0; v < visibleCount && activeTab_ != MenuTab::Guitar; ++v) {
+            int i = shownList[startIdx + v];
+            int rowY = kTop + v * kRowH;
+            if (my >= rowY && my < rowY + kRowH && mx >= 16 && mx <= kMenuW - 16) {
+                selected_ = i;
+                // Value cycling items advance with right
+                if (i == Resolution || i == Sharpness || i == Deband || i == Upscaler ||
+                    i == FpsLimiterItem || i == BitrateLimiterItem || i == TouchOpacityItem ||
+                    i == VibrationItem) {
+                    outNav.right = true;
+                } else {
+                    outNav.accept = true;
+                }
+                return true;
+            }
+        }
+        return false;
+    }
+
+    if (ev.kind == app::shell::TouchEvent::Kind::Cancel) {
+        touchActive_ = false;
+        touchDragging_ = false;
+        return true;
+    }
+    return false;
+}
+
+bool StreamMenu::onTouch(float screenX, float screenY, NavInput& outNav) {
+    app::shell::TouchEvent ev{app::shell::TouchEvent::Kind::Up, 0, screenX, screenY};
+    return onTouch(ev, outNav);
 }
 
 }  // namespace xc::ui

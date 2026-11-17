@@ -36,18 +36,6 @@ Nothing is written to the program folder. Deleting %LOCALAPPDATA%\psbox\
 completely resets the app.
 
 
-What it needs
--------------
-Windows 10 or 11, 64-bit. Keep psbox.exe, SDL3.dll and the assets folder
-together. The first start may show a Windows Firewall question: the app's
-remote web control listens on your home network (port 8080); "Cancel" is fine
-if you don't use it. Windows SmartScreen may warn about an unsigned app:
-"More info" > "Run anyway".
-
-Video is decoded by the GPU (Direct3D 11) when it can, else by the CPU;
-Settings > Video decoder chooses. The sharpening / upscaling filters need a
-GPU driver with Vulkan 1.3; without it the picture is drawn plainly.
-
 Colours and backgrounds
 -----------------------
 Settings > Accent colour: the colour of buttons, highlights and progress bars

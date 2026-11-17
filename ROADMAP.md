@@ -66,6 +66,15 @@ Status: **Em andamento (in progress / next)**, **Planejado (planned)**, **Futuro
   - Abaixo da v1.6.9 o app volta a ler o `settings.json` antigo, anterior aos arquivos por perfil.
 - **PS4**: depende do item 3 (auto-update). Só há pacote de PS4 da v1.5.5 em diante, os `.pkg` não têm assinatura `.sig`, e falta testar em console se o sistema instala uma versão menor por cima da atual.
 
+### 8. Escala Dinâmica de Tipografia e Interface (Mobile / Acessibilidade) — *planejado*
+- **Ideia**: Opção em Configurações para ajustar dinamicamente a escala dos textos e elementos de interface (ex: Normal / Grande / Muito Grande), beneficiando consoles portáteis (telas de 5.5" a 7") e acessibilidade visual em TVs e monitores.
+- **Escopo**: Fator multiplicador nos tamanhos de fonte em `fonts_.draw()` / `fonts_.measure()` e cálculo adaptativo de altura de linhas e modais.
+
+### 9. Auto-Updater Multiplataforma (Linux, Windows e Android) — *planejado (v1.8.0)*
+- **Linux (AppImage)**: Substituição atômica in-place do binário apontado por `$APPIMAGE` com verificação de SHA256/ECDSA e reinicialização automática via `execv`.
+- **Android (APK)**: Download interno do pacote `PSBoxCloudGaming[Android]-*.apk` para cache seguro, integração JNI com `FileProvider` e disparo da Intent nativa do instalador de pacotes do sistema Android (`PackageInstaller`).
+- **Windows**: Download do pacote atualizado e execução de script/comando em segundo plano desacoplado (`detached process`) para substituição dos binários após liberação de locks de arquivo do processo principal, seguido de relançamento do `psbox.exe`.
+
 ---
 
 ## 🚫 Decisões Técnicas e Recursos Descartados (Dropped)

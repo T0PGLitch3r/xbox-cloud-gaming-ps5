@@ -2,7 +2,6 @@
 // Copyright (C) 2026 RafaelNGP
 #include <cstdint>
 #include "net/http.h"
-#include "net/sock.h"
 
 #include "platform/platform.h"
 #include "util/log.h"
@@ -16,15 +15,7 @@
 #include <psa/crypto.h>
 #endif
 
-#include <arpa/inet.h>
-#include <netdb.h>
-#include <netinet/in.h>
-#include <netinet/tcp.h>
-#include <sys/ioctl.h>
-#include <sys/socket.h>
-#include <sys/time.h>
-#include <poll.h>
-#include <unistd.h>
+#include "net/socket.h"
 
 #include <algorithm>
 #include <atomic>
@@ -80,46 +71,43 @@ std::string lower(std::string s) {
 }
 
 int bioSend(void* ctx, const unsigned char* buf, size_t len) {
-    int fd = *static_cast<int*>(ctx);
-    int flags = 0;
-#if defined(MSG_NOSIGNAL) && (MSG_NOSIGNAL != 0)
-    flags = MSG_NOSIGNAL;  // a connection the server dropped: an error, not SIGPIPE
-#endif
-    ssize_t n = sockSend(fd, buf, len, flags);
+    Socket s = *static_cast<Socket*>(ctx);
+    ssize_t n = sendNoSignal(s, buf, len);
     if (n < 0) {
-        int e = sockErrno();
-        if (e == EAGAIN || e == EWOULDBLOCK) return MBEDTLS_ERR_SSL_TIMEOUT;
-        if (e == EINTR) return MBEDTLS_ERR_SSL_WANT_WRITE;
+        int err = lastSocketError();
+        if (wouldBlock(err)) return MBEDTLS_ERR_SSL_TIMEOUT;
+        if (wasInterrupted(err)) return MBEDTLS_ERR_SSL_WANT_WRITE;
         return MBEDTLS_ERR_NET_SEND_FAILED;
     }
     return static_cast<int>(n);
 }
 
 int bioRecv(void* ctx, unsigned char* buf, size_t len) {
-    int fd = *static_cast<int*>(ctx);
-    ssize_t n = sockRecv(fd, buf, len, 0);
+    Socket s = *static_cast<Socket*>(ctx);
+    ssize_t n = recvSocket(s, buf, len, 0);
     if (n < 0) {
-        int e = sockErrno();
-        if (e == EAGAIN || e == EWOULDBLOCK) return MBEDTLS_ERR_SSL_TIMEOUT;
-        if (e == EINTR) return MBEDTLS_ERR_SSL_WANT_READ;
+        int err = lastSocketError();
+        if (wouldBlock(err)) return MBEDTLS_ERR_SSL_TIMEOUT;
+        if (wasInterrupted(err)) return MBEDTLS_ERR_SSL_WANT_READ;
         return MBEDTLS_ERR_NET_RECV_FAILED;
     }
     return static_cast<int>(n);  // 0 = peer closed
 }
 
 // Each request's own time limits (a kept-alive socket keeps the last ones).
-void setTimeouts(int fd, int timeoutMs) {
-    setSocketTimeouts(fd, timeoutMs);
+void setTimeouts(Socket s, int timeoutMs) {
+    setRecvTimeout(s, timeoutMs);
+    setSendTimeout(s, timeoutMs);
 }
 
 }  // namespace
 
-int connectTcp(const std::string& host, int port, int timeoutMs, std::string& err) {
+Socket connectTcpSocket(const std::string& host, int port, int timeoutMs, std::string& err) {
     std::vector<uint32_t> addrs;
-    if (!platform::resolveIPv4(host, addrs, err)) return -1;
+    if (!platform::resolveIPv4(host, addrs, err)) return kInvalidSocket;
     if (addrs.empty()) {
         err = "DNS lookup failed for " + host + ": no addresses found";
-        return -1;
+        return kInvalidSocket;
     }
 
     uint64_t startMs = platform::nowMs();
@@ -150,20 +138,15 @@ int connectTcp(const std::string& host, int port, int timeoutMs, std::string& er
             remainingMs = static_cast<int>(static_cast<uint64_t>(timeoutMs) - elapsed);
         }
 
-        int fd = ::socket(AF_INET, SOCK_STREAM, 0);
-        if (fd < 0) {
-            lastErr = "socket() failed (errno " + std::to_string(sockErrno()) + ")";
+        Socket fd = socketCreate(AF_INET, SOCK_STREAM, 0);
+        if (!fd.valid()) {
+            lastErr = "socket() failed (errno " + std::to_string(lastSocketError()) + ")";
             break;
         }
         setTimeouts(fd, remainingMs > 0 ? remainingMs : timeoutMs);
-        int one = 1;
-        setSockOpt(fd, IPPROTO_TCP, TCP_NODELAY, &one, sizeof one);
-#ifdef SO_NOSIGPIPE
-        setSockOpt(fd, SOL_SOCKET, SO_NOSIGPIPE, &one, sizeof one);
-#endif
-        // A larger window: catalog responses are hundreds of KB from far away.
-        int buf = 1 << 20;
-        setSockOpt(fd, SOL_SOCKET, SO_RCVBUF, &buf, sizeof buf);
+        setTcpNoDelay(fd, true);
+        setNoSigpipe(fd);
+        setRecvBufferSize(fd, 1 << 20);
 
         setNonBlocking(fd, true);
 
@@ -172,21 +155,18 @@ int connectTcp(const std::string& host, int port, int timeoutMs, std::string& er
         sa.sin_port = htons(static_cast<uint16_t>(port));
         sa.sin_addr.s_addr = ip;
 
-        int rc = ::connect(fd, reinterpret_cast<sockaddr*>(&sa), sizeof sa);
-        if (rc != 0) {
-            int connectErr = sockErrno();
-            if (connectErr == EINPROGRESS || connectErr == EWOULDBLOCK) {
-                PollFd pfd{};
-                pfd.fd = fd;
-                pfd.events = POLLOUT;
+        bool connected = connectSocket(fd, reinterpret_cast<sockaddr*>(&sa), sizeof sa);
+        if (!connected) {
+            int errNo = lastSocketError();
+            if (inProgress(errNo)) {
                 int connectTimeout = (remainingMs > 0) ? std::min(remainingMs, 10000) : 10000;
                 if (addrs.size() > 1 && (remainingMs <= 0 || remainingMs > 3000)) {
                     connectTimeout = (remainingMs > 0) ? std::min(remainingMs, 3000) : 3000;
                 }
-                int pr = sockPoll(&pfd, 1, connectTimeout);
+                int pr = pollSockets(nullptr, 0, &fd, 1, connectTimeout);
                 if (pr <= 0) {
                     lastErr = (pr == 0) ? "connect timed out to " + host + ":" + std::to_string(port) + " [" + ipStr + "]"
-                                        : "poll failed connecting to " + host + ":" + std::to_string(port) + " [" + ipStr + "] (errno " + std::to_string(sockErrno()) + ")";
+                                        : "poll failed connecting to " + host + ":" + std::to_string(port) + " [" + ipStr + "] (errno " + std::to_string(lastSocketError()) + ")";
                     closeSocket(fd);
                     if (i + 1 < addrs.size()) {
                         XC_LOGW("%s, trying next IP (%zu/%zu)", lastErr.c_str(), i + 2, addrs.size());
@@ -194,8 +174,8 @@ int connectTcp(const std::string& host, int port, int timeoutMs, std::string& er
                     continue;
                 }
                 int so_error = 0;
-                if (!socketError(fd, so_error) || so_error != 0) {
-                    lastErr = "connect failed to " + host + ":" + std::to_string(port) + " [" + ipStr + "] (errno " + std::to_string(so_error ? so_error : sockErrno()) + ")";
+                if (!getSocketError(fd, so_error) || so_error != 0) {
+                    lastErr = "connect failed to " + host + ":" + std::to_string(port) + " [" + ipStr + "] (errno " + std::to_string(so_error ? so_error : lastSocketError()) + ")";
                     closeSocket(fd);
                     if (i + 1 < addrs.size()) {
                         XC_LOGW("%s, trying next IP (%zu/%zu)", lastErr.c_str(), i + 2, addrs.size());
@@ -203,7 +183,7 @@ int connectTcp(const std::string& host, int port, int timeoutMs, std::string& er
                     continue;
                 }
             } else {
-                lastErr = "connect failed to " + host + ":" + std::to_string(port) + " [" + ipStr + "] (errno " + std::to_string(connectErr) + ")";
+                lastErr = "connect failed to " + host + ":" + std::to_string(port) + " [" + ipStr + "] (errno " + std::to_string(errNo) + ")";
                 closeSocket(fd);
                 if (i + 1 < addrs.size()) {
                     XC_LOGW("%s, trying next IP (%zu/%zu)", lastErr.c_str(), i + 2, addrs.size());
@@ -216,7 +196,12 @@ int connectTcp(const std::string& host, int port, int timeoutMs, std::string& er
     }
 
     err = lastErr.empty() ? ("connect failed to " + host + ":" + std::to_string(port)) : lastErr;
-    return -1;
+    return kInvalidSocket;
+}
+
+int connectTcp(const std::string& host, int port, int timeoutMs, std::string& err) {
+    Socket s = connectTcpSocket(host, port, timeoutMs, err);
+    return static_cast<int>(s.fd);
 }
 
 namespace {
@@ -349,7 +334,11 @@ bool microsoftHost(const std::string& host) {
 std::string todayText() {
     std::time_t now = std::time(nullptr);
     std::tm utc{};
+#if defined(_WIN32)
+    gmtime_s(&utc, &now);
+#else
     gmtime_r(&now, &utc);
+#endif
     char text[16];
     std::strftime(text, sizeof text, "%Y-%m-%d", &utc);
     return text;
@@ -417,7 +406,7 @@ namespace {
 struct PooledConn {
     std::string host;
     int port = 443;
-    int fd = -1;
+    Socket fd{};
     bool tls = false;  // ssl and conf initialised
     mbedtls_ssl_context ssl;
     mbedtls_ssl_config conf;
@@ -433,7 +422,7 @@ struct PooledConn {
             mbedtls_ssl_free(&ssl);
             mbedtls_ssl_config_free(&conf);
         }
-        if (fd >= 0) closeSocket(fd);
+        closeSocket(fd);
     }
 };
 using Conns = std::vector<std::unique_ptr<PooledConn>>;
@@ -459,8 +448,7 @@ public:
             if (mine && !expired) {
                 // Readable while idle: the server closed it (or sent
                 // something unasked); not usable either way.
-                PollFd pfd{(*it)->fd, POLLIN, 0};
-                if (sockPoll(&pfd, 1, 0) == 0) {
+                if (pollSockets(&((*it)->fd), 1, nullptr, 0, 0) == 0) {
                     found = std::move(*it);
                     it = pool_.erase(it);
                     continue;
@@ -642,8 +630,8 @@ Response exchange(const Request& req, const Url& url, bool reuse, bool& stale) {
         conn = std::make_unique<PooledConn>();
         conn->host = url.host;
         conn->port = url.port;
-        conn->fd = connectTcp(url.host, url.port, req.timeoutMs, resp.error);
-        if (conn->fd < 0) return resp;
+        conn->fd = connectTcpSocket(url.host, url.port, req.timeoutMs, resp.error);
+        if (!conn->fd.valid()) return resp;
         tConnected = platform::nowMs();
         tHandshake = tConnected;
 

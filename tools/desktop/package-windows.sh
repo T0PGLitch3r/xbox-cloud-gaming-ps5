@@ -4,7 +4,8 @@
 # Builds or packages the Windows portable zip of the desktop app.
 #
 #   tools/desktop/package-windows.sh <build-dir> [out-dir]
-#       -> <out-dir>/PSBox-<version>-windows-x86_64.zip   (out-dir: <build-dir>/pkg)
+#       -> <out-dir>/PSBox-<version>-windows-x86_64.zip
+#       -> <out-dir>/PSBox-<version>-windows-x86_64.zip.sha256
 set -euo pipefail
 
 build=${1:?usage: package-windows.sh <build-dir> [out-dir]}
@@ -21,73 +22,55 @@ project=$(sed -n 's/^project(xcloud_ps5 VERSION \([0-9.]*\) .*/\1/p' "$root/CMak
 version=${XC_VERSION:-v$project-dev}
 name=PSBox-$version-windows-x86_64
 zipfile=$out/$name.zip
+shafile=$out/$name.zip.sha256
 
 echo "== locate binaries ($build)"
 exe=""
-for candidate in "$build/psbox.exe" "$build/bin/psbox.exe" "$build/psbox"; do
-    if [[ -f $candidate ]]; then
+for candidate in "$build/psbox.exe" "$build/bin/psbox.exe"; do
+    if [[ -f "$candidate" ]]; then
         exe="$candidate"
         break
     fi
 done
-
-stage=$(mktemp -d)
-trap 'rm -rf "$stage"' EXIT
-pkgdir=$stage/PSBox
-mkdir -p "$pkgdir" "$pkgdir/assets" "$pkgdir/licenses"
-
-[[ -n "$exe" ]] || fail "psbox.exe not found in $build (build it first: see cmake/windows-mingw.toolchain.cmake)"
-cp "$exe" "$pkgdir/psbox.exe"
+[[ -n "$exe" ]] || fail "psbox.exe not found in $build; build the target first"
+[[ -s "$exe" ]] || fail "psbox.exe is an empty file (0 bytes)"
 ok "using binary: $exe -> psbox.exe"
-# The tag the package is (the in-app updater checks it against the release's).
-printf '%s\n' "$version" > "$pkgdir/VERSION.txt"
-# Smaller without the debug information (the build keeps the unstripped one).
-strip_tool=$(command -v x86_64-w64-mingw32-strip || command -v llvm-strip || true)
-if [[ -n $strip_tool ]]; then
-    "$strip_tool" --strip-debug "$pkgdir/psbox.exe" && ok "debug information stripped"
-fi
 
-# SDL3.dll: the one DLL the app needs beside it.
-sdl_found=""
-for sdl in "$build/SDL3.dll" "$build/bin/SDL3.dll" "$root/deps/SDL3.dll"; do
-    if [[ -f $sdl ]]; then
-        cp "$sdl" "$pkgdir/SDL3.dll"
-        ok "bundled $sdl"
-        sdl_found=1
+sdl=""
+for candidate in "$build/SDL3.dll" "$build/bin/SDL3.dll" \
+                 "${XC_SDL3_MINGW:-$HOME/.cache/xcloud-ps5/sdl3-3.4.18-mingw}/x86_64-w64-mingw32/bin/SDL3.dll" \
+                 "${XC_MINGW_ROOT:-$HOME/.cache/xcloud-ps5/llvm-mingw-20261104}/x86_64-w64-mingw32/bin/SDL3.dll"; do
+    if [[ -f "$candidate" ]]; then
+        sdl="$candidate"
         break
     fi
 done
-[[ -n $sdl_found ]] || fail "SDL3.dll not found in $build"
-if [[ -n ${XC_SDL3_LICENSE:-} && -f $XC_SDL3_LICENSE ]]; then
-    cp "$XC_SDL3_LICENSE" "$pkgdir/licenses/SDL3-LICENSE.txt"
+[[ -n "$sdl" ]] || fail "SDL3.dll not found; ensure SDL3 MinGW is installed"
+[[ -s "$sdl" ]] || fail "SDL3.dll is an empty file (0 bytes)"
+ok "using SDL3: $sdl -> SDL3.dll"
+
+stage=$(mktemp -d)
+trap 'rm -rf "$stage"' EXIT
+
+echo "== install into stage directory"
+cmake --install "$build" --prefix "$stage" >/dev/null
+pkgdir=$stage/PSBox
+[[ -d "$pkgdir" ]] || fail "cmake --install failed to create PSBox folder"
+
+# Fallback copy if cmake --install did not bundle SDL3.dll
+if [[ ! -f "$pkgdir/SDL3.dll" ]]; then
+    cp "$sdl" "$pkgdir/SDL3.dll"
 fi
 
-# Assets and documentation
-cp -r "$root/assets/"* "$pkgdir/assets/"
+# The tag the package is: the in-app updater checks it against the release's.
+printf '%s\n' "$version" > "$pkgdir/VERSION.txt"
+# Xbox One mode's launcher (windows/psbox-xbox-one.bat).
 if [[ -f "$root/windows/psbox-xbox-one.bat" ]]; then
     cp "$root/windows/psbox-xbox-one.bat" "$pkgdir/PSBox as Xbox One.bat"
 fi
-if [[ -f "$root/windows/README-windows.txt" ]]; then
-    cp "$root/windows/README-windows.txt" "$pkgdir/README-windows.txt"
-fi
-if [[ -f "$root/psbox.png" ]]; then
-    cp "$root/psbox.png" "$pkgdir/psbox.png"
-elif [[ -f "$build/psbox.png" ]]; then
-    cp "$build/psbox.png" "$pkgdir/psbox.png"
-fi
-
-# Licenses
-if [[ -d "$root/licenses" ]]; then
-    cp -r "$root/licenses/"* "$pkgdir/licenses/"
-fi
-for f in LICENSE THIRD_PARTY_NOTICES.md; do
-    if [[ -f "$root/$f" ]]; then
-        cp "$root/$f" "$pkgdir/licenses/"
-    fi
-done
 
 echo "== create zip ($zipfile)"
-rm -f "$zipfile"
+rm -f "$zipfile" "$shafile"
 python3 - << PY
 import os
 import zipfile
@@ -103,8 +86,13 @@ with zipfile.ZipFile(zip_path, 'w', zipfile.ZIP_DEFLATED) as zf:
             zf.write(full_path, rel_path)
 PY
 
-[[ -s $zipfile ]] || fail "failed to create $zipfile"
+[[ -s "$zipfile" ]] || fail "failed to create $zipfile"
 ok "created $zipfile ($(du -h "$zipfile" | cut -f1))"
+
+echo "== generate sha256 checksum ($shafile)"
+(cd "$out" && sha256sum "$name.zip" > "$name.zip.sha256")
+[[ -s "$shafile" ]] || fail "failed to generate $shafile"
+ok "checksum: $(cat "$shafile")"
 
 echo "== check package contents"
 python3 - << PY
@@ -112,16 +100,53 @@ import sys
 import zipfile
 import re
 
+required = [
+    "PSBox/psbox.exe",
+    "PSBox/SDL3.dll",
+    "PSBox/README-windows.txt",
+    "PSBox/assets/cacert.pem",
+    "PSBox/assets/fonts/Inter-Regular.ttf",
+    "PSBox/licenses/LICENSE",
+    "PSBox/licenses/THIRD_PARTY_NOTICES.md",
+]
+
 forbidden = re.compile(r'(^|/)account\.json$|(^|/)autoplay\.txt$|\.log$|\.ppm$|\.aus$|\.h264$|\.key$|(^|/)settings\.json$')
+
 with zipfile.ZipFile("$zipfile", 'r') as zf:
-    for name in zf.namelist():
+    names = set(zf.namelist())
+    for r in required:
+        if r not in names:
+            print(f"Error: mandatory file missing from package: {r}", file=sys.stderr)
+            sys.exit(1)
+    for name in names:
         if not name.startswith("PSBox/"):
             print(f"Error: file outside PSBox/: {name}", file=sys.stderr)
             sys.exit(1)
         if forbidden.search(name) and not name.endswith("cacert.pem"):
             print(f"Error: forbidden file in package: {name}", file=sys.stderr)
             sys.exit(1)
-print("  ok  clean package contents: no private or forbidden files")
+    
+    exe_info = zf.getinfo("PSBox/psbox.exe")
+    if exe_info.file_size == 0:
+        print("Error: PSBox/psbox.exe is 0 bytes (dummy file forbidden)", file=sys.stderr)
+        sys.exit(1)
+        
+    sdl_info = zf.getinfo("PSBox/SDL3.dll")
+    if sdl_info.file_size == 0:
+        print("Error: PSBox/SDL3.dll is 0 bytes", file=sys.stderr)
+        sys.exit(1)
+
+print("  ok  clean package contents: all mandatory files verified, binary non-empty")
 PY
 
+(cd "$out" && sha256sum -c "$name.zip.sha256")
 ok "Windows package check passed: $zipfile"
+
+# Stage to NAS Dev directory if mounted and writable
+nas_dir="/home/notebook-storm/wolfpad-NAS/Dev"
+if [[ -d "$nas_dir" && -w "$nas_dir" ]]; then
+    echo "== stage package to NAS ($nas_dir)"
+    cp "$zipfile" "$nas_dir/"
+    cp "$shafile" "$nas_dir/"
+    ok "staged $name.zip and .sha256 to NAS"
+fi

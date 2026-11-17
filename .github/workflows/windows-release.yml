@@ -3,7 +3,8 @@
 # `windows` branch carries the Windows port.
 #
 # Every 6 hours: when upstream has a release this repository doesn't, its
-# tag is merged into `windows`, built with llvm-mingw, packaged, signed with
+# tag is merged into `windows`, built with upstream's own Windows toolchain
+# (tools/windows), self-tested under Wine, packaged, signed with
 # the WINDOWS_RELEASE_KEY secret (the private half of windows/release-key.pem)
 # and published here as a release: PSBox-<tag>-windows-x86_64.zip and .sig,
 # which the app (built with XC_WINDOWS_UPDATE_REPO = this repository) finds
@@ -32,9 +33,6 @@ concurrency:
 
 env:
   UPSTREAM: RafaelNGP/psbox-cloud-gaming
-  LLVM_MINGW: '20250114'
-  SDL3: '3.4.20'
-  VULKAN_HEADERS: 'v1.4.309'
 
 jobs:
   release:
@@ -81,29 +79,35 @@ jobs:
           fi
           git submodule update --init --recursive --depth 1 deps/mbedtls deps/libdatachannel deps/ffmpeg
 
-      - name: Install the tools
+      - name: Install the tools (upstream's own Windows toolchain scripts)
         if: steps.tag.outputs.build == 'true'
         run: |
           set -euo pipefail
+          sudo dpkg --add-architecture i386
           sudo apt-get update -qq
-          sudo apt-get install -y -qq ninja-build cmake pkg-config nasm
-          cd "$RUNNER_TEMP"
-          curl -sSfL -o llvm-mingw.tar.xz "https://github.com/mstorsjo/llvm-mingw/releases/download/$LLVM_MINGW/llvm-mingw-$LLVM_MINGW-ucrt-ubuntu-20.04-x86_64.tar.xz"
-          tar xf llvm-mingw.tar.xz && mv "llvm-mingw-$LLVM_MINGW-ucrt-ubuntu-20.04-x86_64" llvm-mingw
-          curl -sSfL "https://github.com/libsdl-org/SDL/releases/download/release-$SDL3/SDL3-devel-$SDL3-mingw.tar.gz" | tar xz
-          git clone -q --depth 1 --branch "$VULKAN_HEADERS" https://github.com/KhronosGroup/Vulkan-Headers.git vulkan-headers
-          echo "$RUNNER_TEMP/llvm-mingw/bin" >> "$GITHUB_PATH"
+          sudo apt-get install -y -qq cmake ninja-build nasm wine64 wine
+          bash tools/windows/fetch-toolchain.sh
+          bash tools/windows/fetch-sdl3.sh "$RUNNER_TEMP/sdl3"
 
       - name: Build
         if: steps.tag.outputs.build == 'true'
         run: |
           set -euo pipefail
           cmake -S . -B build-win -G Ninja -DCMAKE_BUILD_TYPE=RelWithDebInfo \
-            -DCMAKE_TOOLCHAIN_FILE=cmake/windows-mingw.toolchain.cmake \
-            -DCMAKE_PREFIX_PATH="$RUNNER_TEMP/SDL3-$SDL3/x86_64-w64-mingw32" \
-            -DXC_VULKAN_HEADERS="$RUNNER_TEMP/vulkan-headers/include" \
+            -DCMAKE_TOOLCHAIN_FILE=cmake/windows.toolchain.cmake \
+            -DCMAKE_PREFIX_PATH="$RUNNER_TEMP/sdl3/x86_64-w64-mingw32" \
             -DXCLOUD_DESKTOP_APP=ON -DXC_WINDOWS_UPDATE_REPO="$GITHUB_REPOSITORY"
           ninja -C build-win psbox
+
+      - name: Self-test (Wine, no sign-in)
+        if: steps.tag.outputs.build == 'true'
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/psbox-selftest" "$RUNNER_TEMP/psbox-data"
+          target_dir=$(WINEDEBUG=-all winepath -w "$RUNNER_TEMP/psbox-selftest")
+          WINEDEBUG=-all SDL_VIDEO_DRIVER=offscreen SDL_AUDIO_DRIVER=dummy \
+            XCLOUD_DATA_DIR="$RUNNER_TEMP/psbox-data" \
+            wine build-win/psbox.exe --selftest "$target_dir"
 
       - name: Package and sign
         if: steps.tag.outputs.build == 'true'
@@ -113,8 +117,7 @@ jobs:
         run: |
           set -euo pipefail
           [ -n "$WINDOWS_RELEASE_KEY" ] || { echo "::error::the WINDOWS_RELEASE_KEY secret is not set"; exit 1; }
-          XC_VERSION="$TAG" XC_SDL3_LICENSE="$RUNNER_TEMP/SDL3-$SDL3/LICENSE.txt" \
-            tools/desktop/package-windows.sh build-win dist
+          XC_VERSION="$TAG" XC_SDL3_MINGW="$RUNNER_TEMP/sdl3" tools/desktop/package-windows.sh build-win dist
           umask 077
           printf '%s\n' "$WINDOWS_RELEASE_KEY" > "$RUNNER_TEMP/key.pem"
           tools/desktop/windows-release.sh "dist/PSBox-$TAG-windows-x86_64.zip" "$RUNNER_TEMP/key.pem"
